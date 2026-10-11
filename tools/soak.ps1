@@ -63,8 +63,10 @@ if (!(Test-Path -LiteralPath $runtimePath)) {
 if ($samples.Count -lt 15 -or ($samples | Where-Object { $_.private_bytes -le 0 }).Count -gt 0) {
     $issues.Add('Insufficient nonzero process-memory evidence.')
 } else {
-    $early = ($samples.GetRange(4, 5) | Measure-Object -Property private_bytes -Average).Average
-    $late = ($samples.GetRange($samples.Count - 5, 5) | Measure-Object -Property private_bytes -Average).Average
+    # Measure explicit numbers: Windows PowerShell does not measure dictionary keys as properties.
+    $early = ($samples.GetRange(4, 5) | ForEach-Object { [double]$_['private_bytes'] } | Measure-Object -Average).Average
+    $late = ($samples.GetRange($samples.Count - 5, 5) | ForEach-Object { [double]$_['private_bytes'] } | Measure-Object -Average).Average
+    if ($null -eq $early -or $null -eq $late -or $early -le 0 -or $late -le 0) { throw 'Process-memory averaging did not produce nonzero values.' }
     $allowance = [Math]::Max(64MB, $early * 0.25)
     $result['private_bytes_early_mean'] = $early
     $result['private_bytes_late_mean'] = $late

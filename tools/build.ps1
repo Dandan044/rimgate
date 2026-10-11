@@ -69,6 +69,10 @@ try {
     Copy-Item -LiteralPath $executable, $pck -Destination $stage
     Copy-Item -LiteralPath 'README.md', 'DEMO_PLAN.md', 'GAME_DESIGN.md', 'docs' -Destination $stage -Recurse
     Copy-Item -LiteralPath 'assets/fonts/LICENSE.txt' -Destination (Join-Path $stage 'FONT_LICENSE.txt')
+    # Optional generated evidence preserves the relative screenshot/report links.
+    if (Test-Path -LiteralPath 'build/delivery_evidence/build') {
+        Copy-Item -LiteralPath 'build/delivery_evidence/build' -Destination $stage -Recurse
+    }
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stage 'VERSION.json') -Encoding utf8
     $windowsZip = "$projectRoot/build/Rimgate-demo-v$Version-windows-x64.zip"
     $sourceZip = "$projectRoot/build/Rimgate-demo-v$Version-source.zip"
