@@ -64,6 +64,9 @@ var review_wait: float = 0.0
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	# Context menus use the same viewport coordinates as tactical input, including
+	# stretched windows and Windows display scaling.
+	get_viewport().gui_embed_subwindows = true
 	RenderingServer.set_default_clear_color(Color("172423"))
 	ui_font = load("res://assets/fonts/NotoSansCJKsc-Regular.otf") if ResourceLoader.exists("res://assets/fonts/NotoSansCJKsc-Regular.otf") else ThemeDB.fallback_font
 	camera = Camera2D.new()
@@ -81,7 +84,8 @@ func _ready() -> void:
 	_sync_pause()
 	_refresh_hud()
 	_parse_review_args()
-	show_toast("准备阶段：右键工事安排人员，点击“开始防守”推进。", 7)
+	if world.phase == "preparing":
+		show_toast("准备阶段：右键工事安排人员，点击“开始防守”推进。", 7)
 	for argument in OS.get_cmdline_user_args():
 		if argument.begins_with("--qa-mode="):
 			var qa_script = load("res://scripts/qa/runtime_check.gd")
@@ -274,7 +278,7 @@ func _build_hud() -> void:
 	actions.add_child(style_option)
 	fire_button = _button("轰击 [F]", _begin_fire, "attack")
 	actions.add_child(fire_button)
-	var instruction: Label = _label("左键 / 框选  ·  Shift 增选  ·  右键移动 / 操控 / 救援  ·  WASD / 中键拖动  ·  滚轮缩放", 12, MUTED)
+	var instruction: Label = _label("左键 / 框选  ·  Shift 增选  ·  右键移动 / 操控 / 救援  ·  WASD / 中键拖动  ·  滚轮缩放", 13, MUTED)
 	stack.add_child(instruction)
 	inspector = _panel(hud)
 	var detail: VBoxContainer = VBoxContainer.new()
@@ -449,7 +453,7 @@ func _refresh_hud() -> void:
 			if u.dead: dead += 1
 			elif u.conscious: awake += 1
 			else: down += 1
-		result_label.text = "[font_size=25][color=%s]%s[/color][/font_size]\n\n%s\n守卫时间  %02d:%02d\n核心耐久  %d / 1000\n清醒 %d   昏迷 %d   阵亡 %d\n步枪弹 %d   机枪弹 %d   炮弹 %d\n友军受击 %d" % ["#b9e2c2" if world.phase == "won" else "#edae91", "守卫成功" if world.phase == "won" else "防线失守", world.result_reason, int(world.time_s) / 60, int(world.time_s) % 60, maxi(0, int(core.hp)), awake, down, dead, int(world.stats.rifle_shots), int(world.stats.mg_shots), int(world.stats.mortar_shots), int(world.stats.friendly_fire)]
+		result_label.text = "[font_size=25][color=%s]%s[/color][/font_size]\n\n%s\n守卫时间  %02d:%02d\n核心耐久  %d / 1000\n清醒 %d   昏迷 %d   阵亡 %d\n步枪弹 %d   机枪弹 %d   炮弹 %d\n同阵营误伤（双方） %d" % ["#b9e2c2" if world.phase == "won" else "#edae91", "守卫成功" if world.phase == "won" else "防线失守", world.result_reason, int(world.time_s) / 60, int(world.time_s) % 60, maxi(0, int(core.hp)), awake, down, dead, int(world.stats.rifle_shots), int(world.stats.mg_shots), int(world.stats.mortar_shots), int(world.stats.friendly_fire)]
 
 func _refresh_inspector() -> void:
 	var b: Dictionary = world.entity(selected_building) if selected_building >= 0 else {}
@@ -679,6 +683,7 @@ func _start() -> void:
 	world.start_battle()
 	_sync_pause()
 	_refresh_hud()
+	show_toast("防守已开始，按 Space 可随时暂停指挥。", 4)
 
 func _toggle_pause() -> void:
 	if world.phase == "preparing":

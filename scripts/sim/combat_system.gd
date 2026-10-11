@@ -98,7 +98,8 @@ func has_line_of_fire(world, shooter: Dictionary, target: Dictionary) -> bool:
 			continue
 		if bool(b.high) and _segment_rect_interval(origin, destination, Rect2(b.rect)).x >= 0.0:
 			return false
-	if bool(cover_for(world, shooter, destination).blocked):
+	var shooter_cover: Dictionary = cover_for(world, shooter, destination)
+	if bool(shooter_cover.blocked) and int(shooter_cover.building_id) != target_building_id:
 		return false
 	if not _is_building(target) and bool(cover_for(world, target, origin).blocked):
 		return false
@@ -383,9 +384,11 @@ func _choose_target(world, shooter: Dictionary, weapon: Dictionary, station: Dic
 	var preferred_id: int = int(shooter.target_id) if station.is_empty() else int(station.target_id)
 	if preferred_id >= 0:
 		var preferred: Dictionary = world.entity(preferred_id)
-		if not _target_alive(preferred):
+		if _target_alive(preferred) and _target_in_range(world, shooter, preferred, weapon, station):
+			return preferred
+		# A station's explicit target is a preference; personal orders stay strict.
+		if station.is_empty():
 			return {}
-		return preferred if _target_in_range(world, shooter, preferred, weapon, station) else {}
 	var best: Dictionary = {}
 	var best_score: float = INF
 	for candidate in world.units:
@@ -626,6 +629,8 @@ func _damage_building(world, b: Dictionary, damage: float, source: Dictionary) -
 
 
 func _suppress(world, u: Dictionary, amount: float, source: Dictionary) -> void:
+	if String(u.kind) == "heavy":
+		amount *= 0.5
 	if amount <= 0.0:
 		return
 	var applied: Dictionary = source.get("suppression_applied", {})

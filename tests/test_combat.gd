@@ -12,13 +12,19 @@ func run(world_factory: Callable) -> Array[String]:
 	if OS.get_cmdline_user_args().has("--combat-benchmark"):
 		_profile_steps(world_factory)
 	_probability_ranges(world_factory)
+	_probability_formula(world_factory)
 	_cover_geometry(world_factory)
+	_target_structure_visibility(world_factory)
 	_sweeps_and_friendly_fire(world_factory)
 	_armor_and_suppression(world_factory)
+	_heavy_suppression_entries(world_factory)
 	_explosion_snapshot(world_factory)
 	_mortar_cycles(world_factory)
 	_reload_conservation(world_factory)
+	_full_ammunition_budget(world_factory)
+	_destroyed_station_ammunition(world_factory)
 	_weapon_rules(world_factory)
+	_machine_gun_preference(world_factory)
 	_terminal_trails(world_factory)
 	_cross_module_orders(world_factory)
 	_spatial_equivalence(world_factory)
@@ -99,6 +105,50 @@ func _sample_arrivals(factory: Callable, screen: float, multi: bool) -> float:
 			arrivals += 1
 	_check(world.projectiles.is_empty(), "isolated range does not leak expired projectiles")
 	return float(arrivals) / 20000.0
+
+
+func _probability_formula(factory: Callable) -> void:
+	var world = _empty(factory)
+	var shooter: Dictionary = State.unit(1, 0, Vector2.ZERO)
+	var target: Dictionary = State.unit(100, 1, Vector2.ZERO)
+	var rifle: Dictionary = Config.rifle()
+	shooter.stability = 1.0
+	_close(world.combat_system.hit_probability(shooter, target, rifle), 0.8, "default rifle near accuracy")
+	target.pos = Vector2(24.0, 0.0)
+	_close(world.combat_system.hit_probability(shooter, target, rifle), 0.35, "default rifle range-end accuracy")
+	target.pos = Vector2(12.0, 0.0)
+	_close(world.combat_system.hit_probability(shooter, target, rifle), 0.575, "default rifle distance interpolation")
+	shooter.stability = 0.4
+	shooter.suppression = 50.0
+	shooter.hp = 60.0
+	shooter.style = 2
+	target.posture = 1
+	# Independently calculated from the contract's literal weapon and body values.
+	_close(world.combat_system.hit_probability(shooter, target, rifle), 0.575 * 0.55 * 0.65 * 0.8 * 0.85 * 1.15, "crouch, stability, suppression, injury and cautious style multiply once")
+	shooter.stability = 0.8
+	shooter.suppression = 25.0
+	shooter.hp = 40.0
+	shooter.style = 0
+	target.pos = Vector2(6.0, 0.0)
+	target.posture = 2
+	var expected: float = 0.6875 * 0.85 * 0.35 * 0.9 * 0.65 * 0.75
+	_close(world.combat_system.hit_probability(shooter, target, rifle), expected, "critical injury and prone silhouette use distinct factors")
+	var projectile: Dictionary = world.combat_system.spawn_direct_projectile(world, shooter, target, rifle)
+	_close(float(projectile.probability), expected, "real projectile uses the default formula without injection")
+	var oracle := RandomNumberGenerator.new()
+	oracle.seed = Config.SEED
+	_check(bool(projectile.accurate) == (oracle.randf() < expected), "default firing decision consumes the formula's Bernoulli sample")
+	world.projectiles.clear()
+	shooter.stability = 1.0
+	shooter.suppression = 0.0
+	shooter.hp = 100.0
+	shooter.style = 1
+	var structure: Dictionary = State.building(1000, "crate", Rect2i(15, 0, 1, 1))
+	structure.pos = Vector2(16.0, 0.0)
+	# The gunner is 20 cells away; the actual MG muzzle is only 16 cells away.
+	shooter.pos = Vector2(-4.0, 0.0)
+	projectile = world.combat_system.spawn_direct_projectile(world, shooter, structure, Config.machine_gun(), -1.0, Vector2.ZERO)
+	_close(float(projectile.probability), 0.5, "default MG formula measures muzzle range and full building volume")
 
 
 func _cover_geometry(factory: Callable) -> void:
@@ -199,6 +249,38 @@ func _sweeps_and_friendly_fire(factory: Callable) -> void:
 	_close(float(crossing.hp), 82.0, "sweep includes previous and current unit positions")
 
 
+func _target_structure_visibility(factory: Callable) -> void:
+	var world = _empty(factory)
+	var shooter: Dictionary = State.unit(100, 1, Vector2(32.5, 33.5))
+	var target: Dictionary = State.building(1000, "wall", Rect2i(32, 34, 1, 1))
+	shooter.target_id = int(target.id)
+	shooter.style = 0
+	shooter.stability = 1.0
+	world.units.append(shooter)
+	world.buildings.append(target)
+	_check(bool(world.cover_for(shooter, target.pos).blocked), "adjacent target wall supplies a relative-wall cover result")
+	_check(world.combat_system.has_line_of_fire(world, shooter, target), "a visible adjacent target wall cannot block an attack on itself")
+	_tick(world, 1)
+	_check(int(world.stats.rifle_shots) == 1, "armed attacker actually fires at its adjacent target wall")
+	world.projectiles.clear()
+	var intervening: Dictionary = State.building(1001, "wall", Rect2i(32, 35, 1, 1))
+	var distant: Dictionary = State.building(1002, "wall", Rect2i(32, 36, 1, 1))
+	world.buildings.append(intervening)
+	world.buildings.append(distant)
+	_check(not world.combat_system.has_line_of_fire(world, shooter, distant), "target exception preserves obstruction by a different high wall")
+	# A distinct low obstacle can still be a relative wall for a prone attacker.
+	world.buildings.erase(target)
+	world.buildings.erase(intervening)
+	world.buildings.append(State.building(1003, "sandbag", Rect2i(32, 34, 1, 1)))
+	shooter.posture = 2
+	_check(not world.combat_system.has_line_of_fire(world, shooter, distant), "target exception preserves a different low relative wall")
+	world.buildings.clear()
+	world.buildings.append(target)
+	shooter.pos = target.pos
+	shooter.prev_pos = shooter.pos
+	_check(not world.combat_system.has_line_of_fire(world, shooter, target), "attacker inside a high target wall still cannot fire")
+
+
 func _armor_and_suppression(factory: Callable) -> void:
 	var world = _empty(factory)
 	var shooter: Dictionary = State.unit(1, 0, Vector2(2.5, 5.5))
@@ -209,7 +291,7 @@ func _armor_and_suppression(factory: Callable) -> void:
 	world.combat_system.advance_projectiles(world, DT)
 	_close(float(heavy.hp), 145.5, "rifle against heavy armor receives quarter damage")
 	_close(float(heavy.bleed_rate), 4.5 * 0.003, "bleeding follows actual armored damage")
-	_close(float(heavy.suppression), 12.0, "direct hit and near miss take the maximum once")
+	_close(float(heavy.suppression), 6.0, "heavy direct hit and near miss take half the maximum once")
 	var mg: Dictionary = Config.machine_gun()
 	mg.speed = 10000.0
 	world.combat_system.spawn_direct_projectile(world, shooter, heavy, mg, 1.0)
@@ -224,6 +306,44 @@ func _armor_and_suppression(factory: Callable) -> void:
 		world.combat_system.advance_projectiles(world, 0.01)
 	_close(float(near.hp), 100.0, "near miss is not a body hit")
 	_close(float(near.suppression), 4.0, "one projectile does not repeatedly apply near-miss suppression")
+
+
+func _heavy_suppression_entries(factory: Callable) -> void:
+	for kind in ["rifleman", "heavy"]:
+		var scale: float = 0.5 if kind == "heavy" else 1.0
+		for weapon_kind in ["rifle", "mg", "fragment"]:
+			var world = _empty(factory)
+			var shooter: Dictionary = State.unit(1, 0, Vector2(2.5, 5.5))
+			var aim: Dictionary = State.unit(101, 1, Vector2(15.5, 5.5))
+			var near: Dictionary = State.unit(100, 1, Vector2(6.5, 6.1), kind)
+			world.units.append(near)
+			var weapon: Dictionary = Config.fragment() if weapon_kind == "fragment" else (Config.machine_gun() if weapon_kind == "mg" else Config.rifle())
+			var near_gain: float = 2.0 if weapon_kind == "fragment" else (7.0 if weapon_kind == "mg" else 4.0)
+			var projectile: Dictionary = world.combat_system.spawn_direct_projectile(world, shooter, aim, weapon, 1.0)
+			for i in range(30):
+				world.step_index += 1
+				world.combat_system.advance_projectiles(world, DT)
+			_close(float(near.hp), float(near.max_hp), "%s %s near miss does not injure" % [kind, weapon_kind])
+			_close(float(near.suppression), near_gain * scale, "%s %s repeated flight applies near pressure once" % [kind, weapon_kind])
+			# Use this same physical source for a later wound: max(near, hit), not their sum.
+			world.combat_system._damage_unit(world, near, 1.0, projectile, true)
+			world.combat_system._suppress(world, near, near_gain, projectile)
+			_close(float(near.suppression), 12.0 * scale, "%s %s source upgrades near pressure to one hit maximum" % [kind, weapon_kind])
+			var hit_world = _empty(factory)
+			var victim: Dictionary = State.unit(100, 1, Vector2(8.5, 5.5), kind)
+			hit_world.units.append(victim)
+			weapon.speed = 10000.0
+			hit_world.combat_system.spawn_direct_projectile(hit_world, shooter, victim, weapon, 1.0)
+			hit_world.step_index += 1
+			hit_world.combat_system.advance_projectiles(hit_world, DT)
+			_check(float(victim.hp) < float(victim.max_hp), "%s %s actual direct-hit path injures" % [kind, weapon_kind])
+			_close(float(victim.suppression), 12.0 * scale, "%s %s direct-hit pressure shares the heavy coefficient" % [kind, weapon_kind])
+		var blast_world = _empty(factory)
+		var exposed: Dictionary = State.unit(100, 1, Vector2(5.5, 5.5), kind)
+		blast_world.units.append(exposed)
+		blast_world.combat_system.explode(blast_world, Vector2(4.5, 5.5), 0)
+		_close(float(exposed.suppression), 22.5 * scale, "%s blast and injury pressure share one scaled maximum" % kind)
+		_check(blast_world.projectiles.size() == 24, "heavy blast pressure preserves real fragments")
 
 
 func _explosion_snapshot(factory: Callable) -> void:
@@ -410,6 +530,92 @@ func _reload_conservation(factory: Callable) -> void:
 	_check(int(b.ammo) == 100 and int(b.loaded) == 0, "operator change preserves belt and stock")
 
 
+func _full_ammunition_budget(factory: Callable) -> void:
+	var world = _empty(factory)
+	var shooter: Dictionary = State.unit(1, 0, Vector2(2.5, 5.5))
+	var target: Dictionary = State.building(1000, "wall", Rect2i(8, 5, 1, 1))
+	target.hp = 1000000.0
+	shooter.target_id = int(target.id)
+	shooter.style = 0
+	world.units.append(shooter)
+	world.buildings.append(target)
+	_check(int(shooter.loaded) + int(shooter.reserve) == 180, "new rifleman's complete finite ammunition budget is 180")
+	var completed_reloads: int = 0
+	var previous_reserve: int = shooter.reserve
+	for i in range(3600):
+		# Keep aim ready to isolate the real fire/reload/inventory cycle from recovery.
+		shooter.stability = 1.0
+		_tick(world, 1)
+		if int(shooter.reserve) < previous_reserve:
+			completed_reloads += 1
+		previous_reserve = int(shooter.reserve)
+		if int(shooter.loaded) + int(shooter.reserve) + int(world.stats.rifle_shots) != 180:
+			_check(false, "every step conserves all 180 rifle rounds including reload reservations")
+			break
+	_check(completed_reloads == 5, "all five spare rifle magazines transfer exactly once")
+	_check(int(world.stats.rifle_shots) == 180 and int(world.stats.projectile_serial) == 180, "complete ammunition budget creates exactly 180 real projectiles")
+	_check(int(shooter.loaded) == 0 and int(shooter.reserve) == 0 and int(shooter.reload_reserved) == 0, "exhaustion leaves no phantom loaded, spare or reserved rifle rounds")
+	_check(String(shooter.status) == "步枪弹药耗尽", "empty finite rifle stock reports exhaustion")
+	_tick(world, 120)
+	_check(int(world.stats.rifle_shots) == 180 and int(world.stats.projectile_serial) == 180, "exhausted rifle cannot create additional shots")
+	_check(world.projectiles.is_empty(), "all 180 spent rifle projectiles eventually hit or expire")
+	print("COMBAT_AMMUNITION rifle_shots=%d reloads=%d loaded=%d reserve=%d" % [int(world.stats.rifle_shots), completed_reloads, int(shooter.loaded), int(shooter.reserve)])
+
+
+func _station_ammunition_ledger(world) -> int:
+	var total: int = int(world.stats.mg_shots) + int(world.stats.mortar_shots) + int(world.stats.ammo_destroyed)
+	for b in world.buildings:
+		if b.kind in ["mg", "mortar"]:
+			total += int(b.loaded) + int(b.ammo)
+	for box in world.supplies:
+		if not bool(box.delivered):
+			total += int(box.amount)
+	return total
+
+
+func _destroyed_station_ammunition(factory: Callable) -> void:
+	var world = factory.call()
+	var gun: Dictionary = {}
+	var mortar: Dictionary = {}
+	for b in world.buildings:
+		if b.kind == "mg" and gun.is_empty():
+			gun = b
+		elif b.kind == "mortar":
+			mortar = b
+	_check(_station_ammunition_ledger(world) == 1828, "default station stock is 1800 MG rounds plus 28 mortar shells")
+	# Construct the valid state after one belt was spent and one actual crate delivered.
+	gun.loaded = 0
+	gun.ammo = int(world.supplies[0].amount)
+	world.supplies[0].delivered = true
+	world.stats.mg_shots = 100
+	mortar.ammo = 3
+	mortar.loaded = 1
+	var operator: Dictionary = world.units[0]
+	operator.pos = gun.crew_points[0]
+	operator.prev_pos = operator.pos
+	operator.job = "operate"
+	operator.stage = "station"
+	operator.station_id = int(gun.id)
+	gun.crew.append(int(operator.id))
+	world.next_wave = Config.WAVE_TIMES.size()
+	world.start_battle()
+	world.step(DT)
+	_check(int(gun.reload_reserved) == 100 and int(gun.ammo) == 200, "destruction fixture contains a real reserved but unconsumed MG belt")
+	_check(_station_ammunition_ledger(world) == 1828, "belt reservation and chamber loading preserve the complete map ammunition budget")
+	gun.hp = 0.0
+	mortar.hp = 0.0
+	world.step(DT)
+	_check(bool(gun.destroyed) and bool(mortar.destroyed), "world finalization destroys both weapon stations")
+	_check(int(world.stats.ammo_destroyed) == 204, "destroyed stock counts 200 MG rounds and all four shells, without counting the reserved belt twice")
+	_check(int(gun.loaded) == 0 and int(gun.ammo) == 0 and int(gun.reload_reserved) == 0 and int(mortar.loaded) == 0 and int(mortar.ammo) == 0, "destroyed station stock and reload reservation clear")
+	_check(gun.crew.is_empty() and int(operator.station_id) == -1, "destroyed MG releases its reserved operator")
+	_check(_station_ammunition_ledger(world) == 1828, "station destruction conserves stock plus fired and destroyed ammunition")
+	for i in range(120):
+		world.step(DT)
+	_check(int(world.stats.ammo_destroyed) == 204 and _station_ammunition_ledger(world) == 1828, "later world steps cannot recount destroyed ammunition")
+	print("COMBAT_AMMUNITION map_budget=%d destroyed=%d" % [_station_ammunition_ledger(world), int(world.stats.ammo_destroyed)])
+
+
 func _weapon_rules(factory: Callable) -> void:
 	var world = _empty(factory)
 	var shooter: Dictionary = State.unit(1, 0, Vector2(2.5, 5.5))
@@ -450,6 +656,51 @@ func _weapon_rules(factory: Callable) -> void:
 	enemy.prev_pos = enemy.pos
 	_tick(mg_world, 1)
 	_check(int(mg_world.stats.mg_shots) == 1, "station MG fires in arc without intercepting itself")
+
+
+func _machine_gun_preference(factory: Callable) -> void:
+	for invalid in ["dead", "missing", "range", "arc", "wall"]:
+		var world = _empty(factory)
+		var gun: Dictionary = State.building(1000, "mg", Rect2i(10, 10, 1, 1))
+		var operator: Dictionary = State.unit(1, 0, gun.crew_points[0])
+		operator.job = "operate"
+		operator.stage = "station"
+		operator.station_id = int(gun.id)
+		operator.stability = 1.0
+		operator.style = 0
+		gun.crew.append(1)
+		var preferred: Dictionary = State.unit(100, 1, Vector2(14.5, 2.5))
+		var available: Dictionary = State.unit(101, 1, Vector2(10.5, 3.5))
+		preferred.job = "treat"
+		available.job = "treat"
+		world.units.append(operator)
+		world.units.append(preferred)
+		world.units.append(available)
+		world.buildings.append(gun)
+		gun.target_id = int(preferred.id)
+		var selected: Dictionary = world.combat_system._choose_target(world, operator, Config.machine_gun(), gun)
+		_check(int(selected.get("id", -1)) == int(preferred.id), "MG retains a valid explicit preference ahead of a nearer automatic enemy")
+		match invalid:
+			"dead":
+				preferred.hp = 0.0
+				preferred.dead = true
+			"missing": gun.target_id = 9999
+			"range": preferred.pos = Vector2(10.5, -25.0)
+			"arc": preferred.pos = Vector2(20.5, 10.5)
+			"wall": world.buildings.append(State.building(1001, "wall", Rect2i(12, 6, 1, 1)))
+		preferred.prev_pos = preferred.pos
+		selected = world.combat_system._choose_target(world, operator, Config.machine_gun(), gun)
+		_check(int(selected.get("id", -1)) == int(available.id), "MG %s preferred target falls back to a legal enemy" % invalid)
+		# Personal orders stay strict; only the station imposes the fixed firing arc.
+		operator.target_id = int(gun.target_id)
+		selected = world.combat_system._choose_target(world, operator, Config.rifle())
+		if invalid == "arc":
+			_check(int(selected.get("id", -1)) == int(preferred.id), "personal rifle target is not constrained by an MG station's firing arc")
+		else:
+			_check(selected.is_empty(), "rifle %s explicit target does not silently fall back" % invalid)
+		_tick(world, 1)
+		_check(int(world.stats.mg_shots) == 1 and int(gun.loaded) == 99, "MG %s fallback fires a real round" % invalid)
+		_check(int(operator.combat_target_id) == int(available.id) and int(operator.station_id) == int(gun.id) and gun.crew == [1], "MG fallback changes firing target without releasing crew")
 
 
 func _terminal_trails(factory: Callable) -> void:

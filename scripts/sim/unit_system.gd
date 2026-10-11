@@ -19,6 +19,7 @@ func _init_unit(u: Dictionary) -> void:
 	u["treatment_reserved"] = false; u["treatment_source"] = ""; u["ai_next"] = 0.0
 	u["blocked_time"] = 0.0; u["rout_latched"] = false; u["flank_done"] = false
 	u["progress_point"] = Vector2.INF; u["progress_distance"] = INF
+	u["ai_target_id"] = -1; u["melee_target_id"] = -1; u["melee_progress"] = 0.0
 	u["ai_destination"] = Vector2(-1, -1)
 
 func rebuild_navigation(world) -> void:
@@ -287,6 +288,7 @@ func _cancel_job(world, u: Dictionary) -> void:
 	u.job = "idle"; u.stage = ""; u.path = PackedVector2Array(); u.path_index = 0; u.goal = u.pos
 	u.target_id = -1; u.rescued_id = -1; u.job_timer = 0.0; u.velocity = Vector2.ZERO
 	u.reload_progress = 0.0; u.reload_reserved = 0; u.burst_left = 0; u.treatment_reserved = false; u.treatment_source = ""
+	u.melee_target_id = -1; u.melee_progress = 0.0
 	u.status = "待命" if u.drafted or u.team == 1 else "未征召"
 
 func release_station(world, u: Dictionary) -> void:
@@ -480,6 +482,12 @@ func finalize(world) -> void:
 		_init_unit(u)
 		_update_life(world, u)
 		if not u.dead and u.conscious: _update_pressure(world, u)
+		# Combat reports empty rifles after its update. Empty enemy rifles instead
+		# continue a visible structural assault; pressure and rout keep precedence.
+		if u.team == 1 and not u.dead and u.conscious and not u.forced_prone and u.job != "rout" and int(u.loaded) <= 0 and int(u.reserve) <= 0 and int(u.melee_target_id) >= 0:
+			var assault: Dictionary = world.entity(int(u.melee_target_id))
+			if not assault.is_empty() and not assault.destroyed and assault.hp > 0:
+				u.status = "近战攻击" + str(assault.name) if _structure_distance(u.pos, assault) <= 0.85 else "空弹接近"
 		if int(u.station_id) >= 0:
 			var b: Dictionary = world.entity(int(u.station_id))
 			if b.is_empty() or b.destroyed or b.hp <= 0: _cancel_job(world, u)
@@ -653,6 +661,7 @@ func _auto_posture(world, u: Dictionary) -> void:
 		if world.combat_system.has_line_of_fire(world, candidate, target): _change_posture(u, posture); return
 
 func _work(world, u: Dictionary, dt: float) -> void:
+	if u.team == 1: _melee_work(world, u, dt)
 	if u.job == "move" and u.path.is_empty(): _finish_job(world, u); return
 	if u.job == "operate":
 		var b: Dictionary = world.entity(int(u.station_id))
@@ -750,48 +759,73 @@ func _nearest_opponent(world, u: Dictionary) -> Dictionary:
 
 func _enemy_ai(world, u: Dictionary) -> void:
 	if u.forced_prone or world.time_s < float(u.rout_until): return
-	if u.kind == "flanker" and not u.flank_done:
-		var flank := Vector2(10.5, 31.5)
-		if u.pos.distance_to(flank) < 1.5: u.flank_done = true
-		else:
-			u.target_id = -1
-			var nearby := _nearest_opponent(world, u)
-			if not nearby.is_empty() and u.pos.distance_to(nearby.pos) < 10.0 and _standing_line(world, u, nearby): u.target_id = int(nearby.id)
-			_ai_move(world, u, flank); u.status = "侧翼推进"; return
-	var target: Dictionary = {}; var best := -INF
+	if int(u.loaded) <= 0 and int(u.reserve) <= 0:
+		u.target_id = -1; u.ai_target_id = -1
+		_advance_to_structure(world, u, true); return
+	u.melee_target_id = -1; u.melee_progress = 0.0
+	var target: Dictionary = {}; var priority := -INF; var best_distance := INF
 	for candidate in world.units:
 		if candidate.team == u.team or candidate.dead: continue
 		var distance: float = u.pos.distance_to(candidate.pos)
 		if distance > 24.0 or not _standing_line(world, u, candidate): continue
-		var score: float = (100.0 if candidate.conscious else -100.0) - distance
-		if int(candidate.station_id) >= 0: score += 8.0
-		if u.kind == "heavy" and distance < 8.0: score += 100.0
-		if score > best: best = score; target = candidate
+		var level: float = (3.0 if int(candidate.station_id) >= 0 else 2.0) if candidate.conscious else 0.1
+		if _better_target(level, distance, int(candidate.id), priority, best_distance, target):
+			target = candidate; priority = level; best_distance = distance
 	var core: Dictionary = world.core()
 	var core_distance: float = u.pos.distance_to(core.pos)
-	var desired_range: float = 12.0 if u.kind == "heavy" else 24.0
-	if core.hp > 0 and core_distance <= desired_range and _standing_line(world, u, core):
-		var score: float = (150.0 if u.kind == "heavy" else 35.0) - core_distance
-		if score > best: target = core
+	if core.hp > 0 and core_distance <= 24.0 and _standing_line(world, u, core) and _better_target(1.0, core_distance, int(core.id), priority, best_distance, target): target = core
 	if not target.is_empty():
+		var previous: Dictionary = world.entity(int(u.ai_target_id))
+		if previous.is_empty() or previous.get("dead", false) or previous.get("destroyed", false) or u.pos.distance_to(previous.pos) > 24.0 or not _standing_line(world, u, previous): u.ai_hold_until = 0.0
 		u.target_id = int(target.id)
-		if u.kind == "heavy":
-			u.path = PackedVector2Array(); u.job = "advance"; u.status = "重装攻击"; return
+		u.ai_target_id = int(target.id)
 		if world.time_s >= float(u.ai_hold_until):
 			var covered: Vector2 = _cover_destination(world, u, target)
 			if covered.distance_to(u.pos) > 0.65: _ai_move(world, u, covered)
 			else: u.path = PackedVector2Array()
 			u.ai_hold_until = world.time_s + 2.0
-		u.status = "掩护交火"; return
-	u.target_id = -1
-	var goal := Vector2(28.5, 35.0) if u.kind == "flanker" else Vector2(32.5, 34.5)
-	if not _reachable(u.pos, goal):
-		var blocker := _blocking_structure(world, u, core.pos)
-		if not blocker.is_empty() and u.pos.distance_to(blocker.pos) <= 24.0:
-			u.target_id = int(blocker.id); u.path = PackedVector2Array(); u.status = "攻击障碍"; return
-		goal = _approach_position(world, u.pos, core)
+		u.status = "重装推进交火" if u.kind == "heavy" and not u.path.is_empty() else "掩护交火"
+		return
+	u.target_id = -1; u.ai_target_id = -1
+	_advance_to_structure(world, u, false)
+
+func _better_target(priority: float, distance: float, id: int, current_priority: float, current_distance: float, current: Dictionary) -> bool:
+	if current.is_empty() or priority > current_priority: return true
+	if priority < current_priority: return false
+	return distance < current_distance - 0.00001 or (absf(distance - current_distance) <= 0.00001 and id < int(current.id))
+
+func _advance_to_structure(world, u: Dictionary, melee: bool) -> void:
+	var target: Dictionary = world.core()
+	var goal: Vector2 = _approach_position(world, u.pos, target)
+	if goal.x < 0:
+		target = _blocking_structure(world, u, world.core().pos)
+		if target.is_empty(): u.path = PackedVector2Array(); u.status = "没有可达攻击目标"; return
+		goal = _approach_position(world, u.pos, target)
+	if melee:
+		if int(u.melee_target_id) != int(target.id): u.melee_progress = 0.0
+		u.melee_target_id = int(target.id)
+		if _structure_distance(u.pos, target) <= 0.85:
+			u.path = PackedVector2Array(); u.job = "advance"; u.status = "近战攻击" + str(target.name); return
+	elif target.kind != "core" and u.pos.distance_to(target.pos) <= 24.0 and _standing_line(world, u, target):
+		u.target_id = int(target.id); u.path = PackedVector2Array(); u.status = "攻击障碍"; return
 	if goal.x >= 0: _ai_move(world, u, goal)
-	u.status = "重装推进" if u.kind == "heavy" else "推进"
+	u.status = "空弹接近" if melee else ("重装推进" if u.kind == "heavy" else "推进")
+
+func _structure_distance(position: Vector2, b: Dictionary) -> float:
+	var rect := Rect2(b.rect)
+	return position.distance_to(Vector2(clampf(position.x, rect.position.x, rect.end.x), clampf(position.y, rect.position.y, rect.end.y)))
+
+func _melee_work(world, u: Dictionary, dt: float) -> void:
+	if int(u.loaded) > 0 or int(u.reserve) > 0 or int(u.melee_target_id) < 0: return
+	var target: Dictionary = world.entity(int(u.melee_target_id))
+	if target.is_empty() or target.destroyed or float(target.hp) <= 0 or _structure_distance(u.pos, target) > 0.85:
+		u.melee_progress = 0.0; return
+	u.melee_progress = float(u.melee_progress) + dt
+	while float(u.melee_progress) + 0.000001 >= 1.0 and float(target.hp) > 0:
+		u.melee_progress = maxf(0.0, float(u.melee_progress) - 1.0)
+		var damage := minf(5.0, float(target.hp))
+		target.hp = maxf(0.0, float(target.hp) - damage); world.stats.damage += damage
+		world.emit_event("damage", {"entity_id": target.id, "shooter_id": u.id, "pos": target.pos, "team": u.team, "target_team": 0, "weapon_kind": "melee", "amount": damage, "hp": target.hp, "bleeding": false})
 
 func _standing_line(world, u: Dictionary, target: Dictionary) -> bool:
 	var copy := u.duplicate(); copy.posture = 0
@@ -805,35 +839,58 @@ func _ai_move(world, u: Dictionary, destination: Vector2) -> void:
 
 func _cover_destination(world, u: Dictionary, target: Dictionary) -> Vector2:
 	var best: Vector2 = u.pos
-	var best_score: float = _cover_score(world, u, target, u.pos)
+	var core_goal := _approach_position(world, u.pos, world.core())
+	var current_score := _cover_score(world, u, target, u.pos, core_goal)
+	var best_score: float = current_score
 	var positions: Array[Vector2] = []
 	for b in world.buildings:
-		if b.destroyed or b.high or b.pos.distance_to(u.pos) > 9.0: continue
+		if b.destroyed or b.high or b.pos.distance_to(u.pos) > 8.0: continue
 		for x in range(b.rect.position.x, b.rect.end.x):
 			positions.append(Vector2(x + 0.5, b.rect.position.y - 0.5)); positions.append(Vector2(x + 0.5, b.rect.end.y + 0.5))
 		for y in range(b.rect.position.y, b.rect.end.y):
 			positions.append(Vector2(b.rect.position.x - 0.5, y + 0.5)); positions.append(Vector2(b.rect.end.x + 0.5, y + 0.5))
+	# Open firing positions let a flanker leave a gun's arc and let heavy troops
+	# advance even where no sandbags exist. They are still scored, not waypoints.
+	if u.kind in ["flanker", "heavy"]:
+		for radius in [2.0, 4.0, 6.0]:
+			for index in range(8): positions.append(u.pos + Vector2.from_angle(index * TAU / 8.0) * radius)
 	for point in positions:
-		if not _can_stand(world, point) or point.distance_to(u.pos) > 7.0: continue
+		if not _can_stand(world, point) or point.distance_to(u.pos) > 6.0 + 0.00001: continue
 		var occupied := false
 		for other in world.units:
 			if int(other.id) != int(u.id) and other.conscious and not other.dead and (other.pos.distance_to(point) < 0.55 or (not other.path.is_empty() and other.goal.distance_to(point) < 0.55)): occupied = true; break
 		if occupied: continue
-		var score: float = _cover_score(world, u, target, point)
-		if score > best_score + 1.0 and _reachable(u.pos, point): best = point; best_score = score
-	return best
+		var score: float = _cover_score(world, u, target, point, core_goal)
+		if score > best_score + 0.00001: best = point; best_score = score
+	return best if best_score >= current_score + 0.5 else Vector2(u.pos)
 
-func _cover_score(world, u: Dictionary, target: Dictionary, point: Vector2) -> float:
+func _path_length(from: Vector2, to: Vector2) -> float:
+	if to.x < 0 or not _reachable(from, to): return INF
+	var path: PackedVector2Array = navigation.get_point_path(_cell(from), _cell(to))
+	var length := 0.0; var previous := from
+	for index in range(1, path.size()):
+		var waypoint: Vector2 = to if index == path.size() - 1 else path[index]
+		length += previous.distance_to(waypoint); previous = waypoint
+	return length if path.size() > 1 else from.distance_to(to)
+
+func _cover_score(world, u: Dictionary, target: Dictionary, point: Vector2, core_goal: Vector2 = Vector2(-1, -1)) -> float:
 	var copy := u.duplicate(); copy.pos = point; copy.posture = 0
 	if point.distance_to(target.pos) > 24.0 or not world.combat_system.has_line_of_fire(world, copy, target): return -INF
+	var distance := _path_length(u.pos, point)
+	if not is_finite(distance): return -INF
 	var protection: Dictionary = world.cover_for(copy, target.pos)
-	var score: float = float(protection.get("chance", 0.0)) * 10.0 - u.pos.distance_to(point) * 0.65
-	score += (u.pos.distance_to(world.core().pos) - point.distance_to(world.core().pos)) * 0.15
-	if u.kind == "flanker":
+	var score: float = float(protection.get("chance", 0.0)) * (1.0 if u.kind == "heavy" else 4.0) - distance * 0.1
+	if u.kind == "heavy" and core_goal.x >= 0:
+		var start_to_core := _path_length(u.pos, core_goal)
+		var point_to_core := _path_length(point, core_goal)
+		if is_finite(start_to_core) and is_finite(point_to_core): score += (start_to_core - point_to_core) * 0.25
+	if u.kind == "flanker" and target.has("conscious") and target.conscious:
+		var outside := true
 		for b in world.stations():
 			if b.kind != "mg" or b.destroyed: continue
 			var direction: Vector2 = point - b.pos
-			if direction.length() < 32.0 and absf(wrapf(direction.angle() - float(b.facing), -PI, PI)) < float(b.arc) * 0.5: score -= 4.0
+			if direction.length() <= 32.0 and absf(wrapf(direction.angle() - float(b.facing), -PI, PI)) <= float(b.arc) * 0.5: outside = false; break
+		if outside: score += 2.0
 	return score
 
 func _blocking_structure(world, u: Dictionary, goal: Vector2) -> Dictionary:
@@ -841,5 +898,7 @@ func _blocking_structure(world, u: Dictionary, goal: Vector2) -> Dictionary:
 	for i in range(1, ceili(length * 4.0)):
 		var point: Vector2 = u.pos.lerp(goal, i / maxf(1.0, length * 4.0))
 		var b: Dictionary = world.building_at(_cell(point))
-		if not b.is_empty() and b.high and not b.destroyed and _standing_line(world, u, b): return b
+		# The first solid building on this ray is itself the intended target.
+		# Its near face must not be rejected as the attacker's own cover.
+		if not b.is_empty() and b.high and not b.destroyed: return b
 	return {}

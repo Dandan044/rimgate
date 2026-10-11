@@ -163,4 +163,108 @@ func run(factory: Callable) -> Array[String]:
 	_check(enemy.job == "rout" and enemy.goal.distance_to(enemy.spawn_entry) < 0.05, "Enemy rout prefers its own entry even when another entry is nearer")
 	_ticks(w, 650)
 	_check(enemy.job != "rout" and enemy.rout_until <= w.time_s, "Enemy AI resumes after suppression cooldown")
+	_test_enemy_contract(factory)
+	_test_logistics_medical_contract(factory)
 	return failures
+
+func _isolated_enemy(factory: Callable, position: Vector2, kind: String = "rifleman"):
+	var w = _quiet(factory)
+	for ally in w.units:
+		ally.dead = int(ally.id) != 1; ally.conscious = not ally.dead; ally.drafted = false
+		ally.pos = Vector2(60.5, 44.5)
+	w._spawn_enemy(position, kind)
+	w.unit_system._ensure_unit(w.units[-1])
+	return w
+
+func _test_enemy_contract(factory: Callable) -> void:
+	var w = _isolated_enemy(factory, Vector2(32.5, 33.5))
+	var enemy: Dictionary = w.units[-1]
+	var operator: Dictionary = w.units[0]; var rifle: Dictionary = w.units[1]
+	operator.pos = Vector2(40.5, 30.5); operator.station_id = int(w.stations()[1].id)
+	rifle.dead = false; rifle.conscious = true; rifle.pos = Vector2(33.5, 33.5)
+	w.unit_system._enemy_ai(w, enemy)
+	_check(enemy.target_id == operator.id, "Enemy strictly prefers a more distant operator to a nearer awake rifleman or core")
+	operator.dead = true; w.unit_system._enemy_ai(w, enemy)
+	_check(enemy.target_id == rifle.id, "Enemy prefers awake defender to core")
+	rifle.conscious = false; w.unit_system._enemy_ai(w, enemy)
+	_check(enemy.target_id == w.core().id, "Visible core outranks an adjacent unconscious defender")
+	operator.dead = false; operator.station_id = -1; operator.conscious = true; operator.pos = Vector2(31.5, 33.5)
+	rifle.conscious = true; rifle.pos = Vector2(33.5, 33.5)
+	w.units.reverse(); w.unit_system._enemy_ai(w, enemy)
+	_check(enemy.target_id == 1, "Equal priority and distance resolve by entity ID independently of array order")
+	operator.pos = Vector2(30.5, 33.5); w.unit_system._enemy_ai(w, enemy)
+	_check(enemy.target_id == 2, "Same-priority target chooses distance before entity ID")
+	w = _isolated_enemy(factory, Vector2(32.5, 12.5), "heavy"); enemy = w.units[-1]
+	w.units[0].pos = Vector2(32.5, 23.5)
+	w.unit_system._enemy_ai(w, enemy)
+	_check(not enemy.path.is_empty() and enemy.goal.y > enemy.pos.y + 2.0 and enemy.goal.distance_to(enemy.pos) <= 6.0001, "Heavy selects a reachable forward firing point within six tiles instead of stopping at first sight")
+	var held_goal: Vector2 = enemy.goal
+	w.time_s = 0.25; w.unit_system._enemy_ai(w, enemy)
+	_check(enemy.goal == held_goal and enemy.ai_hold_until == 2.0, "Enemy keeps a selected firing position for two seconds")
+	w = _isolated_enemy(factory, Vector2(0.6, 18.6), "flanker"); enemy = w.units[-1]
+	w.unit_system._enemy_ai(w, enemy)
+	_check(enemy.goal.y >= 35.5 and enemy.goal.distance_to(Vector2(10.5, 31.5)) > 1.0, "Flanker without a visible target follows a reachable core approach rather than a fixed flank waypoint")
+	# The same viable point has exactly the contracted flanker arc bonus.
+	w = _isolated_enemy(factory, Vector2(8.5, 25.5), "flanker"); enemy = w.units[-1]
+	w.units[0].pos = Vector2(8.5, 30.5)
+	var outside_score: float = w.unit_system._cover_score(w, enemy, w.units[0], enemy.pos)
+	for station in w.stations():
+		if station.kind == "mg": station.facing = (enemy.pos - station.pos).angle()
+	var inside_score: float = w.unit_system._cover_score(w, enemy, w.units[0], enemy.pos)
+	_check(absf(outside_score - inside_score - 2.0) < 0.00001, "Flanker adds two points only outside both machine-gun arcs")
+	w = _isolated_enemy(factory, Vector2(32.5, 35.5)); enemy = w.units[-1]
+	enemy.loaded = 0; enemy.reserve = 0
+	_ticks(w, 59)
+	_check(w.core().hp == 1000.0, "Empty enemy melee cannot damage before one full working second")
+	w.step(); _check(w.core().hp == 995.0, "Adjacent empty enemy deals exactly five structural damage per second")
+	_ticks(w, 60)
+	_check(w.core().hp == 990.0 and w.stats.rifle_shots == 0 and enemy.status.contains("近战"), "Empty enemy sustains structural melee without inventing rifle ammunition")
+	enemy.forced_prone = true; enemy.forced_until = w.time_s + 10.0; enemy.suppression = 70.0; enemy.last_threat = w.time_s
+	_ticks(w, 60)
+	_check(w.core().hp == 990.0, "Forced prone interrupts structural melee without shortening suppression")
+	w = _isolated_enemy(factory, Vector2(32.5, 33.5)); enemy = w.units[-1]
+	enemy.loaded = 0; enemy.reserve = 0
+	for x in range(64): w._add_building("wall", Rect2i(x, 34, 1, 1))
+	w.unit_system.rebuild_navigation(w)
+	_ticks(w, 60)
+	var blocker: Dictionary = w.building_at(Vector2i(32, 34))
+	_check(enemy.melee_target_id == blocker.id and blocker.hp == 295.0 and w.core().hp == 1000.0, "Unreachable core redirects empty enemy melee to the first blocking wall: " + str([enemy.melee_target_id, blocker.id, blocker.hp, enemy.pos, enemy.status, enemy.goal]))
+
+func _test_logistics_medical_contract(factory: Callable) -> void:
+	var w = factory.call(); var mg: Dictionary = w.stations()[0]
+	for box in w.supplies:
+		if box.kind == "mg_ammo" and box.id != 2000: box.delivered = true
+	_check(w.submit([1], "resupply", {"target_id": mg.id}).ok, "First paused carrier reserves the final box")
+	_check(not w.submit([2], "resupply", {"target_id": mg.id}).ok and w.supplies[0].reserved_by == -1 and mg.supply_reserved == 0, "Pending box claim prevents duplicates without mutating real supply state")
+	w.submit([1], "stop")
+	_check(w.submit([2], "resupply", {"target_id": mg.id}).ok, "Replacing the pending task releases the last projected box")
+	w.start_battle(); w.next_wave = 3; w.step()
+	_check(w.supplies[0].reserved_by == 2 and mg.supply_reserved == 200, "Resuming materializes exactly one last-box reservation")
+	w = _quiet(factory); mg = w.stations()[0]
+	w.units[0].pos = mg.crew_points[0]; mg.loaded = 0; mg.ammo = 0
+	w.submit([1], "operate", {"target_id": mg.id}); w.step()
+	_check(w.units[0].job == "operate" and w.units[0].stage == "supply_pickup" and mg.crew.has(1), "Empty machine-gun operator fetches a physical box while retaining its station")
+	_ticks(w, 1500)
+	_check(w.units[0].stage == "station" and mg.loaded == 100 and mg.ammo == 100 and w.units[0].loaded == 30 and w.units[0].reserve == 150, "Automatic supply returns to post and feeds only the machine gun")
+	w = _quiet(factory); mg = w.stations()[0]
+	for box in w.supplies: box.delivered = true
+	w.units[0].pos = mg.crew_points[0]; mg.loaded = 0
+	w.submit([1], "operate", {"target_id": mg.id}); _ticks(w, 120)
+	_check(w.units[0].stage == "station" and mg.crew.has(1) and w.units[0].status.contains("缺") and w.units[0].loaded == 30, "No supply retains the empty post and never silently switches to the operator rifle")
+	w = _quiet(factory)
+	w.units[0].pos = Vector2(39.0, 40.5); w.units[0].bandages = 0
+	w.units[1].pos = Vector2(39.5, 40.5); w.units[1].hp = 20.0; w.units[1].conscious = false; w.units[1].bleed_rate = 0.1
+	w.submit([1], "rescue", {"target_id": 2}); _ticks(w, 900)
+	_check(w.units[0].job == "idle" and w.units[1].carrier_id == -1 and w.units[1].bleed_rate == 0.0 and w.medical_stock == 11 and w.medical_reservations.is_empty(), "Complete rescue transports, places and treats with one hospital medicine, releasing reservations")
+	_check(not w.units[1].conscious and w.units[1].hp < 20.0, "Rescue and treatment do not bypass the long natural recovery rule")
+	w = _quiet(factory)
+	w.units[0].pos = Vector2(39.0, 40.5); w.units[0].bandages = 0; w.medical_stock = 0
+	w.units[1].pos = Vector2(39.5, 40.5); w.units[1].hp = 20.0; w.units[1].conscious = false; w.units[1].bleed_rate = 0.1
+	w.submit([1], "rescue", {"target_id": 2}); _ticks(w, 400)
+	_check(w.units[0].job == "idle" and w.units[1].carrier_id == -1 and w.units[1].bleed_rate == 0.1 and w.units[0].status.contains("缺药"), "Rescue without medicine still places the casualty but reports continued bleeding")
+	w = _quiet(factory)
+	w.units[0].pos = Vector2(28.5, 31.5); w.units[1].pos = Vector2(29.0, 31.5)
+	w.units[1].bleed_rate = 0.1; w.units[1].hp = 60.0
+	w.submit([1], "treat", {"target_id": 2}); _ticks(w, 150)
+	w.submit([1], "stop"); w.step()
+	_check(w.units[0].bandages == 2 and w.units[1].bleed_rate == 0.1 and not w.units[0].treatment_reserved, "Interrupted six-second treatment spends no bandage and leaves the wound active")

@@ -116,7 +116,8 @@ func _draw_building(b: Dictionary) -> void:
 				var active: bool = slot < world.projected_crew(int(b.id)).size()
 				draw_circle(point + Vector2((slot - (float(b.capacity) - 1) * 0.5) * 16, 42), 5, Color("b9edd5") if active else Color("3e4943"))
 			var ammo_text: String = "%d + %d" % [int(b.loaded), int(b.ammo)] if b.kind == "mg" else "%d 炮弹" % int(b.ammo)
-			draw_string(font, point + Vector2(-44, 67), ammo_text, HORIZONTAL_ALIGNMENT_CENTER, 88, 16, Color("e9e7c9"))
+			var zoom: float = screen.camera.zoom.x
+			_screen_text(point + Vector2(0, maxf(67, 42 + 20 / zoom)), ammo_text, maxf(96, 88 * zoom), maxi(13, int(16 * zoom)), Color("e9e7c9"))
 	if selected or float(b.hp) < float(b.max_hp):
 		_bar(point + Vector2(-30, -rect.size.y * 0.5 - 15), 60, float(b.hp) / float(b.max_hp), Color("8cceae"))
 
@@ -179,11 +180,11 @@ func _draw_unit(u: Dictionary) -> void:
 		draw_line(point + Vector2(0, -24), point + Vector2(0, -10), Color("f3d399"), 4)
 	if int(u.team) == 0 or is_selected or int(screen.hover_enemy) == int(u.id):
 		if not u.dead:
-			_bar(point + Vector2(-21, -62 if posture < 2 else -32), 42, float(u.hp) / float(u.max_hp), Color("88c8ad") if u.conscious else Color("dfb775"))
+			_unit_bar(point + Vector2(0, -62 if posture < 2 else -32), float(u.hp) / float(u.max_hp), Color("88c8ad") if u.conscious else Color("dfb775"))
 		if float(u.suppression) > 1 and not u.dead:
-			_bar(point + Vector2(-21, -56 if posture < 2 else -26), 42, float(u.suppression) / 100.0, Color("e6b56b"), 2)
+			_unit_bar(point + Vector2(0, -62 if posture < 2 else -32), float(u.suppression) / 100.0, Color("e6b56b"), true)
 	if int(u.team) == 0:
-		draw_string(font, point + Vector2(-10, 20), "%02d" % int(u.id), HORIZONTAL_ALIGNMENT_CENTER, 20, 16, Color("e6f7de"))
+		_screen_text(point + Vector2(0, maxf(20, 12 / screen.camera.zoom.x)), "%02d" % int(u.id), 40, maxi(13, int(16 * screen.camera.zoom.x)), Color("e6f7de"))
 	if is_selected and int(screen.hover_enemy) >= 0:
 		var foe: Dictionary = world.entity(int(screen.hover_enemy))
 		if not foe.is_empty():
@@ -191,7 +192,7 @@ func _draw_unit(u: Dictionary) -> void:
 			var chance: float = float(cover.get("chance", 0.0))
 			var blocked: bool = bool(cover.get("blocked", false))
 			var text: String = "完全遮挡" if blocked else "掩护 %d%%" % int(chance * 100)
-			draw_string(font, point + Vector2(-50, -64), text, HORIZONTAL_ALIGNMENT_CENTER, 100, 15, Color("d0edc1"))
+			_screen_text(point + Vector2(0, -62 if posture < 2 else -32) - Vector2(0, 5 / screen.camera.zoom.x), text, 180, maxi(12, int(15 * screen.camera.zoom.x)), Color("d0edc1"))
 
 func _draw_rifle(point: Vector2, facing: float, posture: int) -> void:
 	var hand := Vector2(-sin(facing) * 18, -17 + cos(facing) * 7)
@@ -203,7 +204,8 @@ func _draw_rifle(point: Vector2, facing: float, posture: int) -> void:
 
 func _draw_station_ranges() -> void:
 	for b in world.stations():
-		if b.destroyed or (int(screen.selected_building) != int(b.id) and not screen.has_selected_crew(int(b.id))):
+		var show_crew_range: bool = screen.selected.size() == 1 and screen.has_selected_crew(int(b.id))
+		if b.destroyed or (int(screen.selected_building) != int(b.id) and not show_crew_range):
 			continue
 		var point: Vector2 = b.pos * GRID
 		if b.kind == "mg":
@@ -302,7 +304,7 @@ func _draw_cover_preview() -> void:
 	if int(cover.get("building_id", -1)) >= 0:
 		draw_rect(Rect2(Vector2(cover.cell) * GRID, Vector2.ONE * GRID), Color(color, 0.16))
 	var label: String = "落点完全遮挡" if blocked else "落点拦截 %d%%" % int(chance * 100)
-	draw_string(font, point + Vector2(-65, 46), label, HORIZONTAL_ALIGNMENT_CENTER, 130, 16, color)
+	_screen_text(point + Vector2(0, maxf(46, 24 / screen.camera.zoom.x)), label, 180, maxi(12, int(16 * screen.camera.zoom.x)), color)
 
 func _character_region(texture: Texture2D, index: int) -> Rect2:
 	var size: Vector2 = texture.get_size()
@@ -330,6 +332,19 @@ func _terrain_area(index: int, rect: Rect2i) -> void:
 func _bar(point: Vector2, width: float, value: float, color: Color, height: float = 4) -> void:
 	draw_rect(Rect2(point, Vector2(width, height)), Color(0.1, 0.15, 0.13, 0.8))
 	draw_rect(Rect2(point, Vector2(width * clampf(value, 0, 1), height)), color)
+
+func _screen_text(anchor: Vector2, text: String, width: float, size: int, color: Color) -> void:
+	draw_set_transform(anchor, 0, Vector2.ONE / screen.camera.zoom.x)
+	draw_string(font, Vector2(-width * 0.5, 0), text, HORIZONTAL_ALIGNMENT_CENTER, width, size, color)
+	draw_set_transform(Vector2.ZERO)
+
+func _unit_bar(anchor: Vector2, value: float, color: Color, suppression: bool = false) -> void:
+	var zoom: float = screen.camera.zoom.x
+	var width: float = maxf(28, 42 * zoom)
+	var height: float = maxf(3, 4 * zoom)
+	draw_set_transform(anchor, 0, Vector2.ONE / zoom)
+	_bar(Vector2(-width * 0.5, height + 2 if suppression else 0), width, value, color, 2 if suppression else height)
+	draw_set_transform(Vector2.ZERO)
 
 func draw_ellipse_shadow(center: Vector2, radii: Vector2, color: Color) -> void:
 	var points: PackedVector2Array = PackedVector2Array()

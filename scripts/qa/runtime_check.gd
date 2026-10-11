@@ -11,8 +11,12 @@ var report_path := ""
 var samples: Array[float] = []
 var memory_samples: Array[Dictionary] = []
 var restarts := 0
-var next_restart := 120.0
+var next_restart := 350.0
 var next_memory := 60.0
+var next_health := 1.0
+var ammo_baseline := 0
+var progress_watch: Dictionary = {}
+var peak_wave := 0
 var failures: Array[String] = []
 var peak_projectiles := 0
 var peak_nodes := 0
@@ -20,6 +24,9 @@ var benchmark_ready := false
 var display_elapsed := 0.0
 var display_orders: Dictionary = {}
 var offline_capture := false
+var interaction_checks: Array[Dictionary] = []
+var interaction_fixtures: Array[String] = []
+var finished := false
 
 func setup(target) -> void:
 	screen = target
@@ -37,8 +44,14 @@ func setup(target) -> void:
 		_prepare_stress()
 	elif mode == "soak":
 		screen.apply_review_orders()
+		ammo_baseline = _ammo_total()
 	elif mode == "input":
 		call_deferred("_input_check")
+	elif mode == "interaction":
+		duration = 180.0
+		var runner = load("res://scripts/qa/interaction_check.gd").new()
+		add_child(runner)
+		runner.setup(self, screen)
 	elif mode in ["normal", "motion"]:
 		duration = 35.0 if mode == "normal" else 26.0
 		_prepare_display_review()
@@ -124,6 +137,11 @@ func _process(_dt: float) -> void:
 	if screen == null or mode == "input": return
 	var now := Time.get_ticks_usec()
 	var elapsed := (now - started_usec) / 1000000.0
+	if mode == "interaction":
+		if elapsed >= duration:
+			failures.append("Interaction check timed out before completing")
+			_finish()
+		return
 	if mode == "motion":
 		display_elapsed += _dt
 		elapsed = display_elapsed
@@ -133,26 +151,67 @@ func _process(_dt: float) -> void:
 	peak_projectiles = maxi(peak_projectiles, screen.world.projectiles.size())
 	peak_nodes = maxi(peak_nodes, int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT)))
 	if mode == "soak":
+		peak_wave = maxi(peak_wave, int(screen.world.next_wave))
 		if elapsed >= next_restart or screen.world.phase in ["won", "lost"]:
 			screen._restart(); screen.apply_review_orders(); restarts += 1
-			if elapsed >= next_restart: next_restart += 120.0
-		if elapsed >= next_memory:
-			memory_samples.append({"seconds": elapsed, "memory_bytes": Performance.get_monitor(Performance.MEMORY_STATIC), "nodes": Performance.get_monitor(Performance.OBJECT_NODE_COUNT), "voices": screen.audio_players.size(), "projectiles": screen.world.projectiles.size()})
-			next_memory += 60.0
+			progress_watch.clear()
+			if elapsed >= next_restart: next_restart += 350.0
+		if elapsed >= next_health:
+			next_health = elapsed + 1.0
 			_validate_reservations()
+			_validate_progress(elapsed)
+			var enemy = preload("res://scripts/sim/state.gd").unit(-1, 1, Vector2.ZERO)
+			var expected: int = ammo_baseline + int(screen.world.stats.enemy_spawned) * (int(enemy.loaded) + int(enemy.reserve))
+			if _ammo_total() != expected: _fail_once("Whole-scene ammunition total changed: remaining + fired + destroyed")
+		if elapsed >= next_memory:
+			memory_samples.append({"seconds": elapsed, "memory_bytes": Performance.get_monitor(Performance.MEMORY_STATIC), "nodes": Performance.get_monitor(Performance.OBJECT_NODE_COUNT), "resources": Performance.get_monitor(Performance.OBJECT_RESOURCE_COUNT), "voices": screen.audio_players.size(), "projectiles": screen.world.projectiles.size()})
+			next_memory += 60.0
 	if elapsed >= duration: _finish()
 
 func _validate_reservations() -> void:
 	var w = screen.world
 	for b in w.stations():
-		if b.crew.size() > b.capacity: failures.append("Station overbooked")
+		if b.crew.size() > b.capacity: _fail_once("Station overbooked")
 		for id in b.crew:
 			var u: Dictionary = w.entity(int(id))
-			if u.is_empty() or u.station_id != b.id: failures.append("Orphaned crew reservation")
+			if u.is_empty() or u.station_id != b.id: _fail_once("Orphaned crew reservation")
+	for u in w.units:
+		if int(u.station_id) >= 0 and not w.entity(int(u.station_id)).crew.has(int(u.id)): _fail_once("Unit station missing reverse crew reservation")
 	for box in w.supplies:
-		if box.carried_by >= 0 and box.reserved_by != box.carried_by: failures.append("Orphaned supply reservation")
-	if screen.audio_players.size() != 24: failures.append("Audio pool grew")
-	if screen.view.effects.size() > 160 or w.events.size() > 256: failures.append("Effects/events exceeded bounds")
+		if box.carried_by >= 0 and box.reserved_by != box.carried_by: _fail_once("Orphaned supply reservation")
+		if int(box.reserved_by) >= 0:
+			var carrier: Dictionary = w.entity(int(box.reserved_by))
+			if carrier.is_empty() or int(carrier.crate_id) != int(box.id): _fail_once("Supply missing reverse carrier reservation")
+	for slot in w.medical_reservations:
+		var medic: Dictionary = w.entity(int(w.medical_reservations[slot]))
+		if medic.is_empty() or int(medic.medical_slot) != int(slot): _fail_once("Orphaned medical slot")
+	for projectile in w.projectiles:
+		if float(projectile.get("age", 0.0)) > 5.0: _fail_once("Projectile survived beyond configured maximum flight lifetime")
+	if screen.audio_players.size() != 24: _fail_once("Audio pool grew")
+	if screen.view.effects.size() > 160 or w.events.size() > 256: _fail_once("Effects/events exceeded bounds")
+
+func _ammo_total() -> int:
+	var w = screen.world
+	var total: int = int(w.stats.rifle_shots) + int(w.stats.mg_shots) + int(w.stats.mortar_shots) + int(w.stats.ammo_destroyed)
+	for u in w.units: total += int(u.loaded) + int(u.reserve)
+	for b in w.buildings: total += int(b.loaded) + int(b.ammo)
+	for box in w.supplies:
+		if not box.delivered: total += int(box.amount)
+	# Reload reservations refer to rounds still in reserve/stock, not extra rounds.
+	return total
+
+func _validate_progress(elapsed: float) -> void:
+	for u in screen.world.units:
+		var id: int = int(u.id)
+		if u.dead or not u.conscious or int(u.carrier_id) >= 0 or u.path.is_empty() or u.forced_prone or float(u.posture_timer) > 0.0:
+			progress_watch.erase(id); continue
+		if not progress_watch.has(id) or progress_watch[id].pos.distance_to(u.pos) > 0.15 or progress_watch[id].goal.distance_to(u.goal) > 0.15:
+			progress_watch[id] = {"pos": Vector2(u.pos), "goal": Vector2(u.goal), "since": elapsed}
+		elif elapsed - float(progress_watch[id].since) > 10.0:
+			_fail_once("Unit %d retained a movement path without progress for ten seconds" % id)
+
+func _fail_once(message: String) -> void:
+	if not failures.has(message): failures.append(message)
 
 func _click(point: Vector2, button: MouseButton = MOUSE_BUTTON_LEFT) -> void:
 	var motion := InputEventMouseMotion.new(); motion.position = point; screen.get_viewport().push_input(motion, true)
@@ -185,6 +244,8 @@ func _input_check() -> void:
 	_finish()
 
 func _finish() -> void:
+	if finished: return
+	finished = true
 	set_process(false); set_physics_process(false)
 	var elapsed := (Time.get_ticks_usec() - started_usec) / 1000000.0
 	samples.sort()
@@ -194,11 +255,25 @@ func _finish() -> void:
 	var p95 := samples[mini(samples.size() - 1, int(samples.size() * 0.95))] if not samples.is_empty() else 0.0
 	if mode in ["benchmark", "normal"] and (average > 1000.0 / 60.0 or p95 > 33.3): failures.append("Frame-time target missed")
 	if mode == "soak" and (elapsed < 1800.0 or restarts < 5): failures.append("Required soak duration/restarts not reached")
+	if mode == "soak" and memory_samples.size() >= 10:
+		# Compare equally sized windows after warm-up; allow allocator/UI cache noise.
+		var early := 0.0; var late := 0.0
+		for index in range(5):
+			early += float(memory_samples[index + 4].memory_bytes) / 5.0
+			late += float(memory_samples[memory_samples.size() - 5 + index].memory_bytes) / 5.0
+		if late - early > maxf(8 * 1024 * 1024, early * 0.25): _fail_once("Static memory grew beyond warm-up allowance")
 	var result := {"mode": mode, "elapsed_seconds": elapsed, "frames": samples.size(), "mean_ms": average, "average_fps": 1000.0 / average if average > 0 else 0.0, "p95_ms": p95, "restarts": restarts, "peak_projectiles": peak_projectiles, "peak_nodes": peak_nodes, "memory_samples": memory_samples, "cpu": OS.get_processor_name(), "gpu": RenderingServer.get_video_adapter_name(), "os": OS.get_name(), "logical_resolution": str(screen.get_viewport().get_visible_rect().size), "window_resolution": str(screen.get_window().size), "render_resolution": str(screen.get_viewport().get_texture().get_size()), "engine": Engine.get_version_info().string, "failures": failures}
 	if mode == "motion":
 		result["recorded_seconds"] = display_elapsed
 		result["offline_movie_capture"] = offline_capture
 		result["simulation_seconds"] = screen.world.time_s
+	if mode == "interaction":
+		result["input_method"] = "automated Viewport input events in the rendered game; not manual GUI testing"
+		result["checks"] = interaction_checks
+		result["controlled_fixtures"] = interaction_fixtures
+	if mode == "soak":
+		result["peak_wave"] = peak_wave
+		result["checks"] = ["one-second bidirectional crew/supply/medical reservations", "one-second whole-scene ammo conservation", "movement paths with no progress for ten seconds", "projectile flight lifetime", "bounded voices/effects/events", "static memory: last five samples versus samples 5-9, allowance max(8MiB,25%)"]
 	if report_path != "":
 		DirAccess.make_dir_recursive_absolute(report_path.get_base_dir())
 		var file := FileAccess.open(report_path, FileAccess.WRITE)
