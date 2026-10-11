@@ -2,6 +2,8 @@
 
 2026-10-11。所有图片、音效和字体已保存在工程内，运行不联网。
 
+游戏使用 [Godot Engine](https://godotengine.org/license/)；引擎MIT许可随包保存于 `docs/GODOT_LICENSE.txt`，第三方组件说明见该官方许可页与 [官方分发说明](https://docs.godotengine.org/en/stable/about/complying_with_licenses.html)。字体许可证另随包保留。
+
 当前运行版本引用 `assets/art/vector/` 的原创 SVG 人物与工事，详细规格见本文末尾的“原创矢量基础样板”。地面由静态 CanvasItem 绘制，使用稀疏 SVG 草丛点缀；不再引用旧 PNG 地形图集。下面保留旧素材来源记录，便于回溯。
 
 ## 旧版 PNG 角色与工事（留作回退）

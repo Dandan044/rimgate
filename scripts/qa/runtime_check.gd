@@ -27,6 +27,7 @@ var offline_capture := false
 var interaction_checks: Array[Dictionary] = []
 var interaction_fixtures: Array[String] = []
 var finished := false
+var scenario_details: Dictionary = {}
 
 func setup(target) -> void:
 	screen = target
@@ -50,6 +51,11 @@ func setup(target) -> void:
 	elif mode == "interaction":
 		duration = 180.0
 		var runner = load("res://scripts/qa/interaction_check.gd").new()
+		add_child(runner)
+		runner.setup(self, screen)
+	elif mode == "victory":
+		duration = 540.0
+		var runner = load("res://scripts/qa/victory_check.gd").new()
 		add_child(runner)
 		runner.setup(self, screen)
 	elif mode in ["normal", "motion"]:
@@ -280,6 +286,9 @@ func _finish() -> void:
 			result["checks"].append("static memory: last five samples versus samples 5-9, allowance max(8MiB,25%)")
 		else:
 			result["memory_note"] = "Release engine returned zero for static memory; use tools/soak.ps1 process memory evidence. Zero is not evidence of zero allocation."
+	if mode == "victory":
+		result["scenario"] = scenario_details
+		if not bool(scenario_details.get("completed", false)): _fail_once("Real-time victory scenario did not complete")
 	if report_path != "":
 		DirAccess.make_dir_recursive_absolute(report_path.get_base_dir())
 		var file := FileAccess.open(report_path, FileAccess.WRITE)

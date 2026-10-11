@@ -17,7 +17,7 @@ Godot 4.7.2 / Windows x64。原创俯视战术防御 Demo，6 名守军在一张
 - 开局处于准备暂停；布置命令后点击“开始防守”。暂停时可以下命令，恢复后执行。
 - 守到 8:00 获胜；核心被摧毁或全员死亡则失败。结果页可以重开。
 
-建议先让两人操作机枪，两人操作迫击炮，其余人员警戒侧翼并补给、救援。机枪只能攻击朝北的 120°射界，北面沙袋无法保护侧面来袭的火力。
+可以先让两人操作机枪、一人操作迫击炮，其余三人警戒侧翼并补给、救援。机枪只能攻击朝北的 120°射界，北面沙袋无法保护侧面来袭的火力。已验证的八分钟战术与操作时点见 [战术记录](docs/TACTICAL_COMPARISON.md)；这证明场景可胜利，不代表上述简单分工即可自动获胜。
 
 ## 源工程
 
@@ -35,3 +35,5 @@ powershell -ExecutionPolicy Bypass -File tools/build.ps1
 ```
 
 本地引擎、导出模板、`.godot` 缓存与 `build` 不纳入 Git。导出程序与源码 ZIP 输出至 `build`。
+
+发布打包要求先提交工程变更，源码ZIP取自该Git提交。`tools/build.ps1 -ExportOnly -ExportDirectory build/release_windows` 先导出并记录产品文件指纹；测试该导出后，可用 `-PackageOnly -ExportDirectory build/release_windows` 原样打包。打包会核对指纹及EXE/PCK哈希，版本清单分别记录导出与文档所在提交；只打包不代替测试。

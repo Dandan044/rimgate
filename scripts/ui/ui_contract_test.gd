@@ -53,7 +53,11 @@ func _run() -> void:
 	_check(screen.world.projected_crew(int(screen.world.stations()[0].id)).is_empty(), "restart clears crew reservations")
 	_check(screen.view.friendly != null and screen.view.enemy != null and screen.view.heavy != null and screen.view.props != null, "all original vector atlases connected")
 	_check(screen.audio_streams.size() == 14, "all fourteen original sound effects imported")
-	print("UI_CONTRACT_TEST: ", 16 - failures.size(), "/16 passed; failures=", failures)
+	screen.world.phase = "won"
+	screen.world.time_s = 479.999999999892
+	screen._refresh_hud()
+	_check(screen.timer_label.text == "08:00 / 08:00" and screen.result_label.text.contains("守卫时间  08:00"), "floating-point final second displays as eight minutes")
+	print("UI_CONTRACT_TEST: ", 17 - failures.size(), "/17 passed; failures=", failures)
 	for player in screen.audio_players:
 		player.stop()
 		player.stream = null

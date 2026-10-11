@@ -397,7 +397,9 @@ func _layout_hud() -> void:
 func _refresh_hud() -> void:
 	var phase_name: Dictionary = {"preparing": "准备部署", "running": "防守进行中", "paused": "指挥暂停", "won": "守卫成功", "lost": "防线失守"}
 	state_label.text = phase_name.get(world.phase, world.phase)
-	timer_label.text = "%02d:%02d / 08:00" % [int(world.time_s) / 60, int(world.time_s) % 60]
+	# Fixed-step accumulation may reach 480 as 479.999999999892.
+	var elapsed_seconds := int(floor(world.time_s + 0.000001))
+	timer_label.text = "%02d:%02d / 08:00" % [elapsed_seconds / 60, elapsed_seconds % 60]
 	var core: Dictionary = world.core()
 	core_label.text = "设施 %d / %d" % [int(maxf(0, core.hp)), int(core.max_hp)]
 	if world.next_wave < Config.WAVE_TIMES.size():
@@ -453,7 +455,7 @@ func _refresh_hud() -> void:
 			if u.dead: dead += 1
 			elif u.conscious: awake += 1
 			else: down += 1
-		result_label.text = "[font_size=25][color=%s]%s[/color][/font_size]\n\n%s\n守卫时间  %02d:%02d\n核心耐久  %d / 1000\n清醒 %d   昏迷 %d   阵亡 %d\n步枪弹 %d   机枪弹 %d   炮弹 %d\n同阵营误伤（双方） %d" % ["#b9e2c2" if world.phase == "won" else "#edae91", "守卫成功" if world.phase == "won" else "防线失守", world.result_reason, int(world.time_s) / 60, int(world.time_s) % 60, maxi(0, int(core.hp)), awake, down, dead, int(world.stats.rifle_shots), int(world.stats.mg_shots), int(world.stats.mortar_shots), int(world.stats.friendly_fire)]
+		result_label.text = "[font_size=25][color=%s]%s[/color][/font_size]\n\n%s\n守卫时间  %02d:%02d\n核心耐久  %d / 1000\n清醒 %d   昏迷 %d   阵亡 %d\n步枪弹 %d   机枪弹 %d   炮弹 %d\n同阵营误伤（双方） %d" % ["#b9e2c2" if world.phase == "won" else "#edae91", "守卫成功" if world.phase == "won" else "防线失守", world.result_reason, elapsed_seconds / 60, elapsed_seconds % 60, maxi(0, int(core.hp)), awake, down, dead, int(world.stats.rifle_shots), int(world.stats.mg_shots), int(world.stats.mortar_shots), int(world.stats.friendly_fire)]
 
 func _refresh_inspector() -> void:
 	var b: Dictionary = world.entity(selected_building) if selected_building >= 0 else {}
