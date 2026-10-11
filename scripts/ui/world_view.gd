@@ -117,7 +117,9 @@ func _draw_building(b: Dictionary) -> void:
 				draw_circle(point + Vector2((slot - (float(b.capacity) - 1) * 0.5) * 16, 42), 5, Color("b9edd5") if active else Color("3e4943"))
 			var ammo_text: String = "%d + %d" % [int(b.loaded), int(b.ammo)] if b.kind == "mg" else "%d 炮弹" % int(b.ammo)
 			var zoom: float = screen.camera.zoom.x
-			_screen_text(point + Vector2(0, maxf(67, 42 + 20 / zoom)), ammo_text, maxf(96, 88 * zoom), maxi(13, int(16 * zoom)), Color("e9e7c9"))
+			# Crew and their IDs occupy the south side of a station. Keep stock above
+			# the weapon so an occupied post remains as readable as an empty one.
+			_screen_text(point - Vector2(0, maxf(68, 25 / zoom)), ammo_text, maxf(96, 88 * zoom), maxi(13, int(16 * zoom)), Color("e9e7c9"))
 	if selected or float(b.hp) < float(b.max_hp):
 		_bar(point + Vector2(-30, -rect.size.y * 0.5 - 15), 60, float(b.hp) / float(b.max_hp), Color("8cceae"))
 

@@ -255,7 +255,8 @@ func _finish() -> void:
 	var p95 := samples[mini(samples.size() - 1, int(samples.size() * 0.95))] if not samples.is_empty() else 0.0
 	if mode in ["benchmark", "normal"] and (average > 1000.0 / 60.0 or p95 > 33.3): failures.append("Frame-time target missed")
 	if mode == "soak" and (elapsed < 1800.0 or restarts < 5): failures.append("Required soak duration/restarts not reached")
-	if mode == "soak" and memory_samples.size() >= 10:
+	var static_memory_available: bool = not memory_samples.is_empty() and float(memory_samples[0].memory_bytes) > 0
+	if mode == "soak" and static_memory_available and memory_samples.size() >= 10:
 		# Compare equally sized windows after warm-up; allow allocator/UI cache noise.
 		var early := 0.0; var late := 0.0
 		for index in range(5):
@@ -273,7 +274,12 @@ func _finish() -> void:
 		result["controlled_fixtures"] = interaction_fixtures
 	if mode == "soak":
 		result["peak_wave"] = peak_wave
-		result["checks"] = ["one-second bidirectional crew/supply/medical reservations", "one-second whole-scene ammo conservation", "movement paths with no progress for ten seconds", "projectile flight lifetime", "bounded voices/effects/events", "static memory: last five samples versus samples 5-9, allowance max(8MiB,25%)"]
+		result["static_memory_available"] = static_memory_available
+		result["checks"] = ["one-second bidirectional crew/supply/medical reservations", "one-second whole-scene ammo conservation", "movement paths with no progress for ten seconds", "projectile flight lifetime", "bounded voices/effects/events"]
+		if static_memory_available:
+			result["checks"].append("static memory: last five samples versus samples 5-9, allowance max(8MiB,25%)")
+		else:
+			result["memory_note"] = "Release engine returned zero for static memory; use tools/soak.ps1 process memory evidence. Zero is not evidence of zero allocation."
 	if report_path != "":
 		DirAccess.make_dir_recursive_absolute(report_path.get_base_dir())
 		var file := FileAccess.open(report_path, FileAccess.WRITE)
