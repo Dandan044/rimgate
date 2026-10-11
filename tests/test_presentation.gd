@@ -1,0 +1,170 @@
+extends RefCounted
+
+const Presentation = preload("res://scripts/ui/presentation_state.gd")
+const State = preload("res://scripts/sim/state.gd")
+const Config = preload("res://scripts/sim/battle_config.gd")
+
+func run(make_world: Callable) -> Array[String]:
+	var failures: Array[String] = []
+	var world = make_world.call()
+	var presentation = Presentation.new()
+	presentation.reset(world)
+	var unit: Dictionary = world.entity(1)
+	var start: Vector2 = unit.pos
+	world.start_battle()
+	world.submit([1], "move", {"position": start + Vector2(3, 0)})
+	presentation.set_running(true)
+	world.step()
+	presentation.capture(world)
+	var end: Vector2 = unit.pos
+	var rng_before: int = world.rng.state
+	var time_before: float = world.time_s
+	presentation.update_fraction(0.25)
+	var early: Vector2 = presentation.unit_position(unit)
+	presentation.update_fraction(0.75)
+	var late: Vector2 = presentation.unit_position(unit)
+	if not (early.x > start.x and early.x < late.x and late.x < end.x):
+		failures.append("Display frames must progress between actual simulation positions")
+	if world.rng.state != rng_before or world.time_s != time_before or unit.pos != end:
+		failures.append("Drawing samples must not modify battle state or RNG")
+	presentation.set_running(false)
+	var paused_position: Vector2 = presentation.unit_position(unit)
+	for fraction in [0.0, 0.2, 0.9, 1.0]:
+		presentation.update_fraction(fraction)
+		if presentation.unit_position(unit) != paused_position:
+			failures.append("Paused world must stay at its last displayed position")
+	presentation.set_running(true)
+	if presentation.unit_position(unit) != end:
+		failures.append("Resuming must not replay stale movement history")
+	unit.pos += Vector2(10, 0)
+	presentation.capture(world)
+	presentation.update_fraction(0.5)
+	if presentation.unit_position(unit) != unit.pos:
+		failures.append("Teleport must reset display history")
+	unit.carrier_id = 2
+	unit.pos += Vector2(0.5, 0)
+	presentation.capture(world)
+	if presentation.unit_position(unit) != unit.pos:
+		failures.append("Pickup and drop must reset display history")
+	world.reset()
+	presentation.reset(world)
+	if presentation.unit_position(world.entity(1)) != world.entity(1).pos:
+		failures.append("Restart must discard positions from previous battle")
+	var projectile := {"id": 9000, "pos": Vector2(3, 2), "prev_pos": Vector2(2, 2), "age": 0.2}
+	world.projectiles.append(projectile)
+	presentation.set_running(true)
+	presentation.capture(world)
+	presentation.update_fraction(0.5)
+	if not presentation.projectile_position(projectile).is_equal_approx(Vector2(2.5, 2)):
+		failures.append("New projectile must interpolate from its actual swept origin")
+	world.projectiles.clear()
+	presentation.capture(world)
+	presentation.capture(world)
+	if not presentation.current_projectiles.is_empty() or not presentation.previous_projectiles.is_empty():
+		failures.append("Expired projectile history must be released")
+	_terminal_segment(make_world, failures)
+	_explosion_display(make_world, failures)
+	_display_rates(make_world, failures)
+	return failures
+
+func _terminal_segment(make_world: Callable, failures: Array[String]) -> void:
+	var world = make_world.call()
+	world.units.clear(); world.buildings.clear(); world.projectiles.clear(); world.events.clear()
+	world.units.append(State.unit(1, 0, Vector2(2, 5)))
+	world.units.append(State.unit(100, 1, Vector2(3, 5)))
+	var presentation = Presentation.new()
+	presentation.reset(world)
+	presentation.set_running(true)
+	var projectile: Dictionary = world.combat_system.spawn_direct_projectile(world, world.units[0], world.units[1], Config.rifle(), 1.0)
+	world.step_index += 1
+	world.combat_system.advance_projectiles(world, Config.FIXED_DT)
+	presentation.capture(world)
+	if not world.projectiles.is_empty() or not presentation.current_projectiles.has(projectile.id):
+		failures.append("A projectile born and hitting in one tick must retain its terminal display segment")
+		return
+	var terminal: Dictionary = presentation.current_projectiles[projectile.id]
+	var impact_event: Dictionary = {}
+	for event in world.events:
+		if event.type == "projectile_impact": impact_event = event
+	presentation.update_fraction(float(terminal.fraction) * 0.5)
+	var point: Vector2 = presentation.projectile_position(terminal)
+	if not point.is_equal_approx(Vector2(terminal.prev_pos).lerp(Vector2(terminal.pos), 0.5)) or not presentation.projectile_visible(terminal):
+		failures.append("Terminal trajectory must reach the actual collision point at its sub-tick time")
+	if presentation.event_ready(impact_event):
+		failures.append("Impact effect must wait until the displayed projectile reaches its collision")
+	presentation.update_fraction(float(terminal.fraction))
+	if presentation.projectile_visible(terminal) or not presentation.event_ready(impact_event):
+		failures.append("Terminal tracer and impact must exchange visibility at the same time")
+	presentation.set_running(false); presentation.set_running(true)
+	presentation.update_fraction(0.1)
+	if presentation.projectile_visible(terminal) or not presentation.event_ready(impact_event):
+		failures.append("Resume before another fixed tick must not replay terminal lifecycle")
+	world.step_index += 1
+	world.combat_system.advance_projectiles(world, Config.FIXED_DT)
+	presentation.capture(world)
+	if presentation.current_projectiles.has(projectile.id):
+		failures.append("Terminal projectile must not survive into the next display interval")
+	world.reset(); presentation.reset(world)
+	if not presentation.current_projectiles.is_empty():
+		failures.append("Restart must discard terminal trajectories")
+
+func _explosion_display(make_world: Callable, failures: Array[String]) -> void:
+	var world = make_world.call()
+	world.units.clear(); world.buildings.clear(); world.projectiles.clear(); world.events.clear()
+	var presentation = Presentation.new()
+	presentation.reset(world); presentation.set_running(true)
+	world.step_index = 1
+	world.projectiles.append({"id": 9001, "kind": "mortar", "weapon_kind": "mortar", "team": 0, "shooter_id": 1, "start": Vector2(3, 5), "impact": Vector2(6, 5), "pos": Vector2(5.99, 5), "prev_pos": Vector2(5.99, 5), "velocity": Vector2.RIGHT, "dir": Vector2.RIGHT, "age": 3.0 - Config.FIXED_DT * 0.5, "life": Config.FIXED_DT * 0.5, "arc_height": 0.0, "born_step": 0})
+	world.combat_system.advance_projectiles(world, Config.FIXED_DT)
+	presentation.capture(world)
+	var explosion: Dictionary = {}
+	for event in world.events:
+		if event.type == "explosion": explosion = event
+	presentation.update_fraction(0.25)
+	if presentation.event_ready(explosion): failures.append("Explosion must wait for shell touchdown")
+	for projectile in presentation.current_projectiles.values():
+		if projectile.kind == "fragment" and presentation.projectile_visible(projectile):
+			failures.append("Fragments must not appear ahead of shell touchdown")
+	presentation.update_fraction(0.75)
+	if not presentation.event_ready(explosion): failures.append("Explosion must appear after shell touchdown")
+	var visible_fragments := 0
+	for projectile in presentation.current_projectiles.values():
+		if projectile.kind == "fragment" and presentation.projectile_visible(projectile): visible_fragments += 1
+	if visible_fragments != 24: failures.append("All actual explosion fragments must appear after touchdown")
+	presentation.set_running(false); presentation.set_running(true)
+	presentation.update_fraction(0.1)
+	if not presentation.event_ready(explosion): failures.append("Resume must not hide an already displayed explosion")
+	presentation.capture(world); presentation.update_fraction(0.1)
+	presentation.finish_interval(); presentation.update_fraction(0.0)
+	if not presentation.event_ready(explosion) or presentation.fraction != 1.0:
+		failures.append("Battle result must complete the final display interval before freezing")
+	if presentation.projectile_visible(presentation.current_projectiles[9001]):
+		failures.append("Final shell must not stay suspended after the battle ends")
+
+func _display_rates(make_world: Callable, failures: Array[String]) -> void:
+	for physics_rate in [15, 60]:
+		for display_rate in [30, 144]:
+			var world = make_world.call()
+			world.units.resize(1)
+			var unit: Dictionary = world.units[0]
+			var start: Vector2 = unit.pos
+			var presentation = Presentation.new()
+			presentation.reset(world); presentation.set_running(true)
+			world.start_battle()
+			world.submit([1], "move", {"position": start + Vector2(4, 0)})
+			var interval := 1.0 / float(physics_rate)
+			world.step(interval); presentation.capture(world)
+			var next_capture := interval
+			var last: Vector2 = start
+			for frame in range(1, display_rate + 1):
+				var render_time: float = float(frame) / float(display_rate)
+				while render_time + 0.000001 >= next_capture:
+					world.step(interval); presentation.capture(world); next_capture += interval
+				presentation.update_fraction((render_time - (next_capture - interval)) / interval)
+				var point: Vector2 = presentation.unit_position(unit)
+				if point.x <= last.x or point.distance_to(last) > 2.5 / float(display_rate) + 0.0001:
+					failures.append("Movement must remain continuous at physics %d Hz / display %d FPS" % [physics_rate, display_rate])
+					break
+				last = point
+			if absf(last.x - start.x - 2.5) > 0.001:
+				failures.append("Display sampling must preserve travel distance across update rates")
