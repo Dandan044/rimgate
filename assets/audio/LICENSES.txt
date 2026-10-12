@@ -1,0 +1,32 @@
+Rimgate Demo v0.2 — audio source credits and modifications
+
+Gunshot recordings: Tabasco / Vincent Sevedge, Copyright (c) 2009.
+https://opengameart.org/content/gunshot-sounds
+Archive: https://opengameart.org/sites/default/files/sounds.zip
+The page labels CC0, but the archive's creativecommons.txt specifies Creative
+Commons Attribution 3.0 Unported. This distribution conservatively preserves
+that notice and attributes the recordings under CC BY 3.0:
+https://creativecommons.org/licenses/by/3.0/
+Original notice: source/Tabasco-original-license.txt.
+Used SKS, Mosin Nagant and shotgun recordings. Changes: mono PCM conversion,
+shot extraction, frequency filtering, tail gating, pitch/time changes, mixing,
+reflection layers, gain normalization and fades. Used in rifle_1/2, mg_1/2,
+mortar and explosion_1/2. These derived mixes retain CC BY 3.0 attribution.
+
+Impact Sounds (1.0): Kenney, CC0 1.0.
+https://kenney.nl/assets/impact-sounds
+https://creativecommons.org/publicdomain/zero/1.0/
+Original notice: source/Kenney-original-license.txt.
+Selected grass/concrete steps and metal, mining, soft, wood, plate/tin impacts.
+Changes: mono PCM conversion, trimming, filtering, pitch, mixing, gain/fades.
+
+Gun reload sounds: SpringySpringo, CC0 1.0.
+https://opengameart.org/content/gun-reload-sounds
+Assault rifle reload and shotgun cock; mono conversion, pitch, level and fades.
+
+Muffled Distant Explosion: NenadSimic, CC0 1.0.
+https://opengameart.org/content/muffled-distant-explosion
+Recorded log-drum/reverberation layer, converted, trimmed, filtered and mixed.
+
+Original Rimgate order/alert/victory/defeat tones and mixing code are original
+project work. No sampled voices or music. See docs/AUDIO_V2.md and source/MANIFEST.json.

@@ -31,7 +31,7 @@ func capture(world) -> void:
 	current_projectiles = {}
 	for unit in world.units:
 		var id: int = int(unit.id)
-		var state := {"pos": Vector2(unit.pos), "facing": float(unit.facing), "carrier": int(unit.get("carrier_id", -1))}
+		var state := {"pos": Vector2(unit.pos), "facing": float(unit.facing), "weapon_facing": float(unit.get("weapon_facing", unit.facing)), "carrier": int(unit.get("carrier_id", -1))}
 		current_units[id] = state
 		var prior: Dictionary = previous_units.get(id, state)
 		# Spawn, pickup/drop and teleport must not sweep through intervening space.
@@ -84,6 +84,12 @@ func unit_facing(unit: Dictionary) -> float:
 	if current.is_empty(): return float(unit.facing)
 	var previous: Dictionary = previous_units.get(int(unit.id), current)
 	return lerp_angle(float(previous.facing), float(current.facing), fraction)
+
+func weapon_facing(unit: Dictionary) -> float:
+	var current: Dictionary = current_units.get(int(unit.id), {})
+	if current.is_empty(): return float(unit.get("weapon_facing", unit.facing))
+	var previous: Dictionary = previous_units.get(int(unit.id), current)
+	return lerp_angle(float(previous.get("weapon_facing", previous.facing)), float(current.get("weapon_facing", current.facing)), fraction)
 
 func projectile_position(projectile: Dictionary) -> Vector2:
 	var id: int = int(projectile.id)

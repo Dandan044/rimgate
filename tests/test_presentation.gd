@@ -3,6 +3,7 @@ extends RefCounted
 const Presentation = preload("res://scripts/ui/presentation_state.gd")
 const State = preload("res://scripts/sim/state.gd")
 const Config = preload("res://scripts/sim/battle_config.gd")
+const Weapon = preload("res://scripts/sim/weapon_pose.gd")
 
 func run(make_world: Callable) -> Array[String]:
 	var failures: Array[String] = []
@@ -65,7 +66,35 @@ func run(make_world: Callable) -> Array[String]:
 	_terminal_segment(make_world, failures)
 	_explosion_display(make_world, failures)
 	_display_rates(make_world, failures)
+	_weapon_alignment(make_world, failures)
 	return failures
+
+func _weapon_alignment(make_world: Callable, failures: Array[String]) -> void:
+	var world = make_world.call()
+	var presentation = Presentation.new()
+	var unit: Dictionary = world.entity(1)
+	unit["weapon_facing"] = PI - 0.1
+	presentation.reset(world)
+	presentation.set_running(true)
+	unit.weapon_facing = -PI + 0.1
+	presentation.capture(world)
+	presentation.update_fraction(0.5)
+	if absf(absf(presentation.weapon_facing(unit)) - PI) > 0.001:
+		failures.append("Weapon rotation must interpolate across angle wrap without spinning")
+	var rng_state: int = world.rng.state
+	for posture in [0, 1, 2]:
+		for i in range(8):
+			var angle: float = float(i) * TAU / 8.0
+			var pose: Dictionary = Weapon.rifle(Vector2(20.5, 20.5), angle, posture)
+			var visible_tip: Vector2 = Vector2(pose.anchor) + Vector2.from_angle(angle) * (21.25 / 64.0)
+			if not visible_tip.is_equal_approx(Vector2(pose.muzzle)):
+				failures.append("Displayed rifle barrel tip must match the shared simulation muzzle")
+	for kind in ["mg", "mortar"]:
+		var pose: Dictionary = Weapon.station(Vector2(20.5, 22.5), -PI * 0.75, kind)
+		if Vector2(pose.muzzle).distance_to(Vector2(pose.anchor)) < 0.5:
+			failures.append("Station muzzle must extend beyond the pivot")
+	if world.rng.state != rng_state:
+		failures.append("Weapon display transforms must not consume simulation randomness")
 
 func _terminal_segment(make_world: Callable, failures: Array[String]) -> void:
 	var world = make_world.call()

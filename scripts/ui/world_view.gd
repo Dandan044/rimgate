@@ -3,6 +3,7 @@ extends Node2D
 const GRID: float = 64.0
 const Presentation = preload("res://scripts/ui/presentation_state.gd")
 const Ground = preload("res://scripts/ui/ground_view.gd")
+const Weapon = preload("res://scripts/sim/weapon_pose.gd")
 var motion = Presentation.new()
 var screen: Node
 var world
@@ -59,7 +60,7 @@ func advance_display(dt: float) -> void:
 func on_event(event: Dictionary) -> void:
 	var kind: String = event.get("type", "")
 	if kind in ["weapon_fired", "projectile_impact", "explosion", "damage", "building_destroyed"]:
-		var duration: float = 0.16 if kind == "weapon_fired" else (1.2 if kind == "explosion" else 0.45)
+		var duration: float = 0.13 if kind == "weapon_fired" else (1.2 if kind == "explosion" else (0.18 if kind == "damage" else 0.4))
 		effects.append({"kind": kind, "age": 0.0, "life": duration, "pos": event.get("pos", Vector2.ZERO) * GRID, "data": event})
 		if effects.size() > 160:
 			effects.pop_front()
@@ -89,6 +90,7 @@ func _draw() -> void:
 	_draw_orders()
 	_draw_cover_preview()
 	_draw_aim_preview()
+	_draw_unit_aims()
 
 func _draw_building(b: Dictionary) -> void:
 	var point: Vector2 = b.pos * GRID
@@ -97,6 +99,11 @@ func _draw_building(b: Dictionary) -> void:
 		_prop(3, rect.grow(-3), Color(0.8, 0.8, 0.8, 0.8))
 		return
 	var selected: bool = int(screen.selected_building) == int(b.id)
+	# Ground contact shadows use the same lower-right light direction as the atlas.
+	if b.kind == "sandbag":
+		draw_ellipse_shadow(rect.get_center() + Vector2(5, 19), Vector2(rect.size.x * 0.48, 11), Color(0.12, 0.19, 0.16, 0.22))
+	else:
+		draw_rect(Rect2(rect.position + Vector2(5, 7), rect.size), Color(0.12, 0.19, 0.16, 0.14))
 	if selected:
 		draw_rect(rect.grow(6), Color("b6ead6"), false, 2.5)
 	match String(b.kind):
@@ -109,8 +116,11 @@ func _draw_building(b: Dictionary) -> void:
 			draw_arc(point, 48 + pulse * 3, 0, TAU, 48, Color(0.42, 0.93, 0.86, 0.4 + pulse * 0.2), 3, true)
 		"mg", "mortar":
 			_prop(6 if b.kind == "mg" else 8, rect.grow(10))
-			draw_set_transform(point, float(b.facing))
-			_prop(7 if b.kind == "mg" else 9, Rect2(-22, -17, 76, 34))
+			var weapon_angle: float = float(b.get("weapon_facing", b.facing))
+			var pose: Dictionary = Weapon.station(b.pos, weapon_angle, b.kind)
+			var kick: float = _recoil(int(b.id))
+			draw_set_transform(Vector2(pose.anchor) * GRID - Vector2.from_angle(weapon_angle) * kick, weapon_angle)
+			_prop(7 if b.kind == "mg" else 9, pose.sprite_rect)
 			draw_set_transform(Vector2.ZERO)
 			for slot in range(int(b.capacity)):
 				var active: bool = slot < world.projected_crew(int(b.id)).size()
@@ -127,7 +137,7 @@ func _draw_unit(u: Dictionary) -> void:
 	var point: Vector2 = unit_position(u) * GRID
 	var is_selected: bool = screen.selected.has(int(u.id))
 	var down: bool = not bool(u.conscious) or bool(u.dead)
-	var facing: float = motion.unit_facing(u)
+	var facing: float = motion.weapon_facing(u) if String(u.get("weapon_state", "idle")) in ["aiming", "firing", "recovering"] else motion.unit_facing(u)
 	if is_selected:
 		draw_arc(point, 24, 0, TAU, 32, Color("c4ffe6"), 2.5, true)
 	elif int(u.team) == 1 and int(screen.hover_enemy) == int(u.id):
@@ -148,26 +158,42 @@ func _draw_unit(u: Dictionary) -> void:
 		index = 9 if down else 4
 	var frame: Rect2 = _character_region(texture, index)
 	var body_size: Vector2 = Vector2(77, 77) if u.kind == "heavy" else Vector2(68, 68)
-	var tint: Color = Color("9b9a8b") if u.dead else Color.WHITE
+	var damage_flash: float = _damage_flash(int(u.id))
+	var tint: Color = (Color("9b9a8b") if u.dead else Color.WHITE).lerp(Color(1.0, 0.28, 0.24, 1.0), damage_flash * 0.72)
+	# Injury shake is entirely visual; it never changes the foot point or hit box.
+	var body_offset: Vector2 = Vector2(sin(visual_time * 115.0 + int(u.id)) * 2.0, cos(visual_time * 93.0 + int(u.id)) * 0.8) * damage_flash
+	var working: bool = u.job == "treat" and u.stage == "treatment"
+	var work_dip: float = 4.0 + sin(visual_time * 8.0) * 1.4 if working else 0.0
 	var sway: float = sin(visual_time * 11 + float(u.id)) * 1.2 if u.velocity.length() > 0.1 and not down else 0.0
 	var hands_busy: bool = int(u.get("crate_id", -1)) >= 0 or int(u.get("rescued_id", -1)) >= 0 or u.job == "treat"
 	var has_weapon: bool = not down and not hands_busy and u.job != "operate"
 	var weapon_behind: bool = posture != 2 and sin(facing) < -0.35
 	if has_weapon and weapon_behind:
-		_draw_rifle(point, facing, posture)
+		_draw_rifle(point + body_offset, facing, posture, int(u.id))
 	if posture == 2:
-		draw_set_transform(point, facing if not down else 0.0)
+		draw_set_transform(point + body_offset, facing if not down else 0.0)
 		draw_texture_rect_region(texture, Rect2(-body_size * 0.5, body_size), frame, tint)
 		draw_set_transform(Vector2.ZERO)
 	else:
-		draw_texture_rect_region(texture, Rect2(point + Vector2(-body_size.x * 0.5, -body_size.y * 0.875 + sway), body_size), frame, tint)
+		draw_texture_rect_region(texture, Rect2(point + body_offset + Vector2(-body_size.x * 0.5, -body_size.y * 0.875 + sway + work_dip), body_size), frame, tint)
 	var carrying_crate: bool = false
 	for box in world.supplies:
 		if int(box.get("carried_by", -1)) == int(u.id): carrying_crate = true; break
 	var rescued: Dictionary = world.entity(int(u.get("rescued_id", -1)))
 	var carrying_person: bool = not rescued.is_empty() and int(rescued.get("carrier_id", -1)) == int(u.id)
 	if has_weapon and not weapon_behind:
-		_draw_rifle(point, facing, posture)
+		_draw_rifle(point + body_offset, facing, posture, int(u.id))
+	if working:
+		var hands := point + Vector2(0, -20 + work_dip)
+		draw_line(hands + Vector2(-10, 0), hands + Vector2(8, sin(visual_time * 10.0) * 3.0), Color("d4d4b5"), 5, true)
+		draw_rect(Rect2(hands + Vector2(0, -4), Vector2(10, 7)), Color("edf0dc"))
+		_progress_at(point, float(u.job_timer) / 6.0, "止血", Color("c5dfb7"))
+	elif u.job == "operate" and u.stage == "station":
+		var station: Dictionary = world.entity(int(u.station_id))
+		if not station.is_empty():
+			var toward: Vector2 = (Vector2(station.pos) * GRID - point).normalized()
+			var grip: Vector2 = point + Vector2(0, -17)
+			draw_line(grip - Vector2(7, 0), grip + toward * 15.0 + Vector2(4, 0), Color("acb99c"), 4, true)
 	if carrying_crate:
 		_prop(12, Rect2(point + Vector2(-13, -31), Vector2(30, 24)))
 	if carrying_person:
@@ -190,19 +216,60 @@ func _draw_unit(u: Dictionary) -> void:
 	if is_selected and int(screen.hover_enemy) >= 0:
 		var foe: Dictionary = world.entity(int(screen.hover_enemy))
 		if not foe.is_empty():
-			var cover: Dictionary = world.cover_for(u, foe.pos)
+			var cover: Dictionary = world.cover_for(u, _incoming_muzzle(foe, u.pos))
 			var chance: float = float(cover.get("chance", 0.0))
 			var blocked: bool = bool(cover.get("blocked", false))
 			var text: String = "完全遮挡" if blocked else "掩护 %d%%" % int(chance * 100)
 			_screen_text(point + Vector2(0, -62 if posture < 2 else -32) - Vector2(0, 5 / screen.camera.zoom.x), text, 180, maxi(12, int(15 * screen.camera.zoom.x)), Color("d0edc1"))
 
-func _draw_rifle(point: Vector2, facing: float, posture: int) -> void:
-	var hand := Vector2(-sin(facing) * 18, -17 + cos(facing) * 7)
-	if posture == 2:
-		hand = Vector2.from_angle(facing) * 12 + Vector2(-sin(facing), cos(facing)) * 9
-	draw_set_transform(point + hand, facing)
-	_prop(10, Rect2(-15.625, -20, 40, 40))
+func _draw_rifle(point: Vector2, facing: float, posture: int, holder_id: int) -> void:
+	var pose: Dictionary = Weapon.rifle(point / GRID, facing, posture)
+	draw_set_transform(Vector2(pose.anchor) * GRID - Vector2.from_angle(facing) * _recoil(holder_id), facing)
+	_prop(10, pose.sprite_rect)
 	draw_set_transform(Vector2.ZERO)
+
+func _recoil(holder_id: int) -> float:
+	var kick: float = 0.0
+	for fx in effects:
+		if fx.kind != "weapon_fired" or not motion.event_ready(fx.data): continue
+		if int(fx.data.get("holder_id", fx.data.get("entity_id", -1))) == holder_id:
+			kick = maxf(kick, 4.0 * sin(clampf(float(fx.age) / float(fx.life), 0, 1) * PI))
+	return kick
+
+func _damage_flash(unit_id: int) -> float:
+	var flash: float = 0.0
+	for fx in effects:
+		if fx.kind == "damage" and int(fx.data.get("entity_id", -1)) == unit_id and motion.event_ready(fx.data):
+			flash = maxf(flash, 1.0 - float(fx.age) / float(fx.life))
+	return flash
+
+func _progress_at(point: Vector2, value: float, label: String, color: Color) -> void:
+	_bar(point + Vector2(-21, -72), 42, value, color, 3)
+	_screen_text(point + Vector2(0, -80), label, 100, 12, color)
+
+func _draw_unit_aims() -> void:
+	for u in world.units:
+		if not u.conscious or u.dead or u.job == "operate": continue
+		if not screen.selected.has(int(u.id)) and int(screen.hover_enemy) != int(u.id): continue
+		if String(u.get("weapon_state", "idle")) != "aiming": continue
+		_draw_aim_cone(unit_position(u) * GRID, motion.weapon_facing(u), float(u.get("aim_fraction", 0.0)), float(u.stability), int(u.style))
+	for b in world.stations():
+		if int(screen.selected_building) != int(b.id) and not screen.has_selected_crew(int(b.id)): continue
+		if b.destroyed or String(b.get("weapon_state", "idle")) != "aiming": continue
+		var crew: Array[int] = world.projected_crew(int(b.id))
+		var gunner: Dictionary = world.entity(crew[0]) if not crew.is_empty() else {}
+		_draw_aim_cone(Vector2(b.pos) * GRID, float(b.get("weapon_facing", b.facing)), float(b.get("aim_fraction", 0.0)), float(gunner.get("stability", 0.0)), int(gunner.get("style", 1)))
+
+func _draw_aim_cone(point: Vector2, direction: float, progress: float, stability: float, style: int) -> void:
+	var width: float = lerpf(0.36, 0.035, clampf(progress, 0, 1)) + (1.0 - clampf(stability, 0, 1)) * 0.12
+	var length: float = 120.0
+	var color: Color = [Color("e1b679"), Color("b9dbbc"), Color("a3d4d1")][clampi(style, 0, 2)]
+	var points := PackedVector2Array([point])
+	for i in range(17): points.append(point + Vector2.from_angle(direction - width + width * 2 * i / 16.0) * length)
+	draw_colored_polygon(points, Color(color, 0.075))
+	draw_line(point, points[1], Color(color, 0.32), 1.2, true)
+	draw_line(point, points[points.size() - 1], Color(color, 0.32), 1.2, true)
+	draw_arc(point, 30, direction - PI * 0.5, direction - PI * 0.5 + TAU * clampf(progress, 0.0, 1.0), 32, Color(color, 0.65), 2, true)
 
 func _draw_station_ranges() -> void:
 	for b in world.stations():
@@ -233,7 +300,9 @@ func _draw_projectiles() -> void:
 			var velocity: Vector2 = projectile.get("velocity", projectile.get("dir", Vector2.RIGHT))
 			if velocity.length() < 0.01: velocity = Vector2.RIGHT
 			var color: Color = Color("f8d585") if kind != "fragment" else Color("d8bb9c")
-			draw_line(point - velocity.normalized() * (20 if kind != "fragment" else 9), point, color, 1.8 if kind != "fragment" else 1.2, true)
+			var trail: float = 20.0 if kind != "fragment" else 9.0
+			if projectile.has("start"): trail = minf(trail, point.distance_to(Vector2(projectile.start) * GRID))
+			draw_line(point - velocity.normalized() * trail, point, color, 1.8 if kind != "fragment" else 1.2, true)
 
 func _draw_effects() -> void:
 	for fx in effects:
@@ -243,7 +312,13 @@ func _draw_effects() -> void:
 		var alpha: float = 1.0 - progress
 		match String(fx.kind):
 			"weapon_fired":
-				draw_circle(point, 9 * alpha, Color(1.0, 0.85, 0.49, alpha))
+				if progress < 0.5:
+					var facing: float = Vector2(fx.data.get("aim_dir", fx.data.get("dir", Vector2.RIGHT))).angle()
+					draw_set_transform(point, facing)
+					var flame := PackedVector2Array([Vector2(-3, -3), Vector2(8, -5), Vector2(18, 0), Vector2(8, 5), Vector2(-3, 3)])
+					draw_colored_polygon(flame, Color(1.0, 0.68, 0.26, alpha * 0.85))
+					draw_circle(Vector2(3, 0), 4.0, Color(1.0, 0.94, 0.7, alpha))
+					draw_set_transform(Vector2.ZERO)
 			"explosion":
 				if progress < 0.25:
 					draw_circle(point, 35 + progress * 200, Color(1, 0.75, 0.34, alpha * 0.7))
@@ -252,7 +327,27 @@ func _draw_effects() -> void:
 					var off: Vector2 = Vector2.from_angle(float(i) * 2.39) * progress * 85
 					draw_circle(point + off + Vector2(0, -progress * 30), 15 + progress * 38, Color(0.24, 0.27, 0.23, alpha * 0.28))
 			"damage":
-				draw_arc(point, 12 + progress * 10, 0, TAU, 12, Color(0.86, 0.31, 0.23, alpha * 0.8), 2, true)
+				if not world.entity(int(fx.data.get("entity_id", -1))).has("team"):
+					draw_arc(point, 12 + progress * 10, 0, TAU, 12, Color(0.86, 0.31, 0.23, alpha * 0.6), 2, true)
+			"projectile_impact":
+				var material: String = String(fx.data.get("material", "ground"))
+				if material in ["metal", "armor"]:
+					for i in range(6):
+						var direction := Vector2.from_angle(float(i) * 1.05 + float(fx.data.get("serial", 0)) * 0.17)
+						draw_line(point + direction * progress * 5, point + direction * (5 + progress * 25), Color(0.98, 0.88, 0.62, alpha), 1.5, true)
+				elif material == "concrete":
+					for i in range(5):
+						var offset := Vector2.from_angle(float(i) * 2.39) * progress * 20.0
+						draw_rect(Rect2(point + offset, Vector2(3.5, 2.5)), Color(0.72, 0.76, 0.69, alpha * 0.9))
+				elif material == "unit":
+					for i in range(3):
+						var offset := Vector2.from_angle(float(i) * 2.1) * progress * 12.0
+						draw_circle(point + offset, 2.5 * alpha, Color(0.65, 0.24, 0.2, alpha * 0.65))
+				else:
+					var dust := Color(0.67, 0.59, 0.4, alpha * 0.32) if material == "sandbag" else Color(0.48, 0.4, 0.3, alpha * 0.35)
+					for i in range(4):
+						var offset := Vector2.from_angle(float(i) * 2.39) * progress * 15.0
+						draw_circle(point + offset + Vector2(0, -progress * 8), 3.0 + progress * 7.0, dust)
 			_:
 				for i in range(4):
 					var direction: Vector2 = Vector2.from_angle(float(i) * 1.57 + 0.4)
@@ -262,12 +357,25 @@ func _draw_orders() -> void:
 	for id in screen.selected:
 		var u: Dictionary = world.entity(int(id))
 		if u.is_empty(): continue
+		if u.job != "operate": _draw_forced_target(u, unit_position(u) * GRID)
 		var goal: Vector2 = u.get("goal", u.pos)
 		for order in world.pending_orders:
 			if order.ids.has(id) and order.kind == "move": goal = order.data.position
 		if u.pos.distance_to(goal) > 0.2:
 			draw_dashed_line(unit_position(u) * GRID, goal * GRID, Color(0.75, 0.93, 0.79, 0.6), 1.5, 12)
 			draw_arc(goal * GRID, 9, 0, TAU, 16, Color("c4f1cf"), 2, true)
+	var station: Dictionary = world.entity(int(screen.selected_building))
+	if not station.is_empty() and int(station.get("capacity", 0)) > 0:
+		_draw_forced_target(station, Vector2(station.pos) * GRID)
+
+func _draw_forced_target(holder: Dictionary, origin: Vector2) -> void:
+	var target: Dictionary = world.entity(int(holder.get("target_id", -1)))
+	if target.is_empty() or target.get("dead", false) or target.get("destroyed", false): return
+	var destination: Vector2 = (unit_position(target) if target.has("team") else Vector2(target.pos)) * GRID
+	draw_dashed_line(origin, destination, Color(0.96, 0.61, 0.42, 0.32), 1.3, 10)
+	draw_arc(destination, 28, 0, TAU, 24, Color(1.0, 0.67, 0.43, 0.75), 2, true)
+	for direction in [Vector2.RIGHT, Vector2.LEFT, Vector2.UP, Vector2.DOWN]:
+		draw_line(destination + direction * 22, destination + direction * 34, Color("f7bd87"), 2, true)
 
 func _draw_aim_preview() -> void:
 	if int(screen.aim_station) < 0: return
@@ -294,19 +402,27 @@ func _draw_cover_preview() -> void:
 	var u: Dictionary = world.entity(int(screen.selected[0]))
 	if u.is_empty() or not u.conscious or u.dead: return
 	var preview: Dictionary = u.duplicate()
-	preview.pos = screen.mouse_world()
-	var cover: Dictionary = world.cover_for(preview, foe.pos)
+	preview.pos = Vector2(Vector2i(screen.mouse_world().floor())) + Vector2.ONE * 0.5
+	var point: Vector2 = preview.pos * GRID
+	if not world.unit_system.destination_available(world, preview.pos, int(u.id)):
+		draw_rect(Rect2(point - Vector2.ONE * 32.0, Vector2.ONE * GRID), Color(0.8, 0.39, 0.29, 0.2))
+		_screen_text(point + Vector2(0, 46), "不可停留 / 已占用", 180, 12, Color("ebad8e"))
+		return
+	var cover: Dictionary = world.cover_for(preview, _incoming_muzzle(foe, preview.pos))
 	var chance: float = float(cover.get("chance", 0.0))
 	var blocked: bool = bool(cover.get("blocked", false))
-	var point: Vector2 = preview.pos * GRID
 	var color: Color = Color("b6eccb") if chance > 0 or blocked else Color("e3c596")
 	draw_arc(point, 23, 0, TAU, 32, color, 2, true)
 	var direction: Vector2 = (foe.pos - preview.pos).normalized()
 	draw_line(point + direction * 30, point + direction * 70, color, 2, true)
-	if int(cover.get("building_id", -1)) >= 0:
-		draw_rect(Rect2(Vector2(cover.cell) * GRID, Vector2.ONE * GRID), Color(color, 0.16))
+	for obstacle in cover.get("obstacles", []):
+		if float(obstacle.get("chance", 0.0)) > 0.0:
+			draw_rect(Rect2(Vector2(obstacle.cell) * GRID, Vector2.ONE * GRID), Color(color, 0.16))
 	var label: String = "落点完全遮挡" if blocked else "落点拦截 %d%%" % int(chance * 100)
 	_screen_text(point + Vector2(0, maxf(46, 24 / screen.camera.zoom.x)), label, 180, maxi(12, int(16 * screen.camera.zoom.x)), color)
+
+func _incoming_muzzle(shooter: Dictionary, destination: Vector2) -> Vector2:
+	return Vector2(Weapon.aimed_rifle(shooter.pos, destination, int(shooter.posture)).muzzle)
 
 func _character_region(texture: Texture2D, index: int) -> Rect2:
 	var size: Vector2 = texture.get_size()

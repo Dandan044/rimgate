@@ -18,4 +18,15 @@
 <g transform="translate(128 192)"><rect x="5" y="11" width="54" height="44" rx="6" fill="#759a90"/><rect x="11" y="17" width="42" height="32" rx="4" fill="#bcd0b1" stroke="none"/><path d="M27 24H37V29H42V39H37V44H27V39H22V29H27Z" fill="#f0ecd2" stroke="none"/></g>
 <g transform="translate(192 192)"><path d="M6 37L16 15L34 9L52 23L59 43L42 56L18 53Z" fill="#9daa9e"/><path d="M16 15L31 30L52 23L34 9Z" fill="#bac1af" stroke="none"/><path d="M31 30L42 56L59 43L52 23Z" fill="#7c9185" stroke="none"/></g>
 </g>
+<!-- Upper-left lighting, restrained bevels and seams; original silhouettes retained. -->
+<g stroke="none">
+<g transform="translate(0 0)" fill="#776f52" opacity=".45"><path d="M9 48H29V51H11Z M35 48H55V51H37Z"/><path d="M9 34H18V37H10Z M27 34H36V37H28Z M45 34H54V37H46Z"/></g>
+<g transform="translate(64 0)"><path d="M7 12H55V17H7Z" fill="#c7d0c4" opacity=".7"/><path d="M51 18H56V53H51Z" fill="#536c62" opacity=".45"/><path d="M12 42H29V44H12Z M35 48H47V50H35Z" fill="#4c625b" opacity=".25"/></g>
+<g transform="translate(128 0)"><path d="M11 11H53V15H11Z" fill="#bdc3a3" opacity=".45"/><path d="M49 18H54V52H49Z" fill="#3b5244" opacity=".5"/><path d="M20 44H43V47H20Z" fill="#47604d" opacity=".45"/></g>
+<g transform="translate(0 64)"><path d="M20 6H44L56 19H51L41 11H23L12 23H7V20Z" fill="#a8beb0" opacity=".5"/><path d="M53 25H58V44L44 58H25V53H41L53 41Z" fill="#293f3b" opacity=".5"/></g>
+<g transform="translate(192 64)"><path d="M17 28H30L36 31H54V32H35L29 30H17Z" fill="#c8d0b9" opacity=".6"/></g>
+<g transform="translate(0 128)"><path d="M14 26Q19 14 31 13" fill="none" stroke="#c0c9a8" stroke-width="2" opacity=".7"/></g>
+<g transform="translate(0 192)"><path d="M9 16H55V19H9Z" fill="#c4caaa" opacity=".45"/><path d="M49 28H55V51H49Z" fill="#3b5342" opacity=".45"/></g>
+<g transform="translate(64 192)"><path d="M9 16H55V19H9Z" fill="#e0c4a0" opacity=".45"/><path d="M49 28H55V51H49Z" fill="#6b4735" opacity=".4"/></g>
+</g>
 </svg>

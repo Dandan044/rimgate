@@ -1,0 +1,122 @@
+[
+  {
+    "name": "rifle_1",
+    "seconds": 0.85,
+    "peak": 0.72,
+    "rms": 0.10876
+  },
+  {
+    "name": "rifle_2",
+    "seconds": 0.85,
+    "peak": 0.72,
+    "rms": 0.10768
+  },
+  {
+    "name": "mg_1",
+    "seconds": 0.72,
+    "peak": 0.76,
+    "rms": 0.14069
+  },
+  {
+    "name": "mg_2",
+    "seconds": 0.72,
+    "peak": 0.76,
+    "rms": 0.15433
+  },
+  {
+    "name": "mortar",
+    "seconds": 1.05,
+    "peak": 0.8,
+    "rms": 0.11943
+  },
+  {
+    "name": "explosion_1",
+    "seconds": 2.8,
+    "peak": 0.86,
+    "rms": 0.09486
+  },
+  {
+    "name": "explosion_2",
+    "seconds": 2.8,
+    "peak": 0.86,
+    "rms": 0.09344
+  },
+  {
+    "name": "impact",
+    "seconds": 0.3298,
+    "peak": 0.64,
+    "rms": 0.06269
+  },
+  {
+    "name": "impact_metal_01",
+    "seconds": 0.1406,
+    "peak": 0.573,
+    "rms": 0.09106
+  },
+  {
+    "name": "impact_wall_01",
+    "seconds": 0.375,
+    "peak": 0.62,
+    "rms": 0.12606
+  },
+  {
+    "name": "impact_sand_01",
+    "seconds": 0.5589,
+    "peak": 0.4537,
+    "rms": 0.02185
+  },
+  {
+    "name": "hit",
+    "seconds": 0.5421,
+    "peak": 0.57,
+    "rms": 0.10246
+  },
+  {
+    "name": "reload",
+    "seconds": 1.5557,
+    "peak": 0.56,
+    "rms": 0.04381
+  },
+  {
+    "name": "reload_mg_01",
+    "seconds": 1.8303,
+    "peak": 0.59,
+    "rms": 0.04515
+  },
+  {
+    "name": "station_handle_01",
+    "seconds": 0.4738,
+    "peak": 0.49,
+    "rms": 0.14056
+  },
+  {
+    "name": "mortar_load_01",
+    "seconds": 0.1948,
+    "peak": 0.55,
+    "rms": 0.06478
+  },
+  {
+    "name": "step_01",
+    "seconds": 0.7747,
+    "peak": 0.3386,
+    "rms": 0.01267
+  },
+  {
+    "name": "step_02",
+    "seconds": 0.6707,
+    "peak": 0.34,
+    "rms": 0.01575
+  },
+  {
+    "name": "step_concrete_01",
+    "seconds": 0.103,
+    "peak": 0.32,
+    "rms": 0.03409
+  },
+  {
+    "name": "bandage_01",
+    "seconds": 1.15,
+    "peak": 0.3702,
+    "rms": 0.0197
+  }
+]

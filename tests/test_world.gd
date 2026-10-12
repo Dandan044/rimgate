@@ -57,4 +57,21 @@ func run(factory: Callable) -> Array[String]:
 	_check(w.phase == "lost", "All dead triggers defeat")
 	w.reset()
 	_check(initial == _snapshot(w), "Reset after loss clears old state, timers and reservations")
+	w = factory.call()
+	w.spawn_wave(0); w.spawn_wave(1); w.spawn_wave(2)
+	var occupied: Dictionary = {}
+	for u in w.units:
+		var cell := Vector2i(Vector2(u.pos).floor())
+		_check(not occupied.has(cell), "Back-to-back waves spawn into distinct cells")
+		_check(Vector2(u.pos).is_equal_approx(Vector2(cell) + Vector2(0.5, 0.5)), "Every spawned unit begins at a grid centre")
+		occupied[cell] = u.id
+	_check(w.units.size() == 30, "Safe spawn preserves all six defenders and twenty-four attackers")
+	w = factory.call()
+	_check(w.submit([1], "operate", {"target_id": 1022}).ok, "Station operator can be reserved in preparation")
+	var target = preload("res://scripts/sim/state.gd").unit(900, 1, Vector2(20.5, 10.5))
+	w.units.append(target)
+	var locked: Dictionary = w.submit_station_attack(1022, 900)
+	_check(locked.ok and w.entity(1022).target_id == -1, "Preparing station target queues without advancing simulation")
+	w.start_battle(); w.step()
+	_check(w.entity(1022).target_id == 900 and w.entity(1).station_id == 1022, "Station attack applies without releasing the operator")
 	return failures

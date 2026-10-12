@@ -67,8 +67,12 @@ def main():
         ("alert", .75, "alert", 1), ("victory", 1.25, "victory", 1),
         ("defeat", 1.2, "defeat", 1),
     ]
+    # UI tones remain original. Combat/foley use the licensed v2 source mixer.
     for spec in specs:
-        sound(*spec)
+        if spec[2] in ["order", "alert", "victory", "defeat"]:
+            sound(*spec)
+    from generate_audio_v2 import main as sampled_audio
+    sampled_audio()
     drawings = {
         "move": '<path d="M7 24h31M25 10l14 14-14 14"/>',
         "attack": '<circle cx="24" cy="24" r="13"/><path d="M24 3v10m0 22v10M3 24h10m22 0h10"/>',
@@ -91,7 +95,7 @@ def main():
     for name, drawing in drawings.items():
         svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 48 48"><g fill="none" stroke="#d4ebd6" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">{drawing}</g></svg>\n'
         (BASE / "icons" / f"{name}.svg").write_text(svg, encoding="utf-8")
-    print(f"Generated {len(specs)} original WAV effects and {len(drawings)} original SVG UI icons")
+    print(f"Generated original UI tones, sampled v2 combat/foley and {len(drawings)} SVG icons")
 
 
 if __name__ == "__main__":

@@ -9,12 +9,14 @@ static func unit(id: int, team: int, position: Vector2, kind: String = "rifleman
 static func building(id: int, kind: String, rect: Rect2i) -> Dictionary:
 	var hp := 200.0
 	var height := 0.8
-	var screen := 0.45
+	var screen := 0.5
 	var high := false
 	match kind:
 		"wall": hp = 300.0; height = 2.2; screen = 1.0; high = true
 		"crate": hp = 400.0; height = 0.9; screen = 0.55
 		"core": hp = 1000.0; height = 2.2; screen = 1.0; high = true
 		"mg", "mortar": hp = 300.0; screen = 0.35
+		"floor": height = 0.0; screen = 0.0
 	var center := Vector2(rect.position) + Vector2(rect.size) * 0.5
-	return {"id": id, "kind": kind, "name": {"sandbag": "沙袋", "wall": "墙体", "crate": "箱体", "core": "远古设施", "mg": "重机枪", "mortar": "迫击炮"}.get(kind, kind), "rect": rect, "pos": center, "hp": hp, "max_hp": hp, "height": height, "screen_volume": screen, "high": high, "vaultable": not high, "destroyed": false, "crew": [], "capacity": 2 if kind == "mortar" else (1 if kind == "mg" else 0), "crew_points": [center + Vector2(0, 1), center + Vector2(1, 1)], "ammo": 4 if kind == "mortar" else 0, "loaded": 100 if kind == "mg" else 0, "ammo_capacity": 8 if kind == "mortar" else (400 if kind == "mg" else 0), "supply_reserved": 0, "reload_progress": 0.0, "reload_reserved": 0, "aim_progress": 0.0, "fire_point": Vector2(-1, -1), "fire_requested": false, "target_id": -1, "weapon_cooldown": 0.0, "burst_left": 0, "burst_rest": 0.0, "facing": -PI / 2.0, "arc": deg_to_rad(120.0), "last_crew": [], "status": "无人操作"}
+	var barrier_type := "wall" if high else ("floor" if height < 0.1 else "cover")
+	return {"id": id, "kind": kind, "name": {"sandbag": "沙袋", "wall": "墙体", "crate": "箱体", "core": "远古设施", "mg": "重机枪", "mortar": "迫击炮"}.get(kind, kind), "rect": rect, "pos": center, "hp": hp, "max_hp": hp, "height": height, "screen_volume": screen, "screening_strength": 4.0 * screen, "barrier_type": barrier_type, "high": high, "vaultable": not high, "destroyed": false, "crew": [], "capacity": 2 if kind == "mortar" else (1 if kind == "mg" else 0), "crew_points": [center + Vector2(0, 1), center + Vector2(1, 1)], "ammo": 4 if kind == "mortar" else 0, "loaded": 100 if kind == "mg" else 0, "ammo_capacity": 8 if kind == "mortar" else (400 if kind == "mg" else 0), "supply_reserved": 0, "reload_progress": 0.0, "reload_reserved": 0, "aim_progress": 0.0, "fire_point": Vector2(-1, -1), "fire_requested": false, "target_id": -1, "weapon_cooldown": 0.0, "burst_left": 0, "burst_rest": 0.0, "facing": -PI / 2.0, "arc": deg_to_rad(120.0), "last_crew": [], "status": "无人操作"}

@@ -1,11 +1,13 @@
 extends SceneTree
 
 var failures: Array[String] = []
+var checks: int = 0
 
 func _initialize() -> void:
 	call_deferred("_run")
 
 func _check(condition: bool, label: String) -> void:
+	checks += 1
 	if not condition:
 		failures.append(label)
 		push_error("UI CHECK: " + label)
@@ -52,12 +54,55 @@ func _run() -> void:
 	_check(screen.world.pending_orders.is_empty() and screen.selected.is_empty(), "restart clears orders and selection")
 	_check(screen.world.projected_crew(int(screen.world.stations()[0].id)).is_empty(), "restart clears crew reservations")
 	_check(screen.view.friendly != null and screen.view.enemy != null and screen.view.heavy != null and screen.view.props != null, "all original vector atlases connected")
-	_check(screen.audio_streams.size() == 14, "all fourteen original sound effects imported")
+	_check(screen.audio_streams.size() == 24, "all twenty-four upgraded sound effects imported")
+	# Use the real viewport input route while PopupMenu is open. Calling only
+	# _right_click would miss the GUI consumption bug this case guards against.
+	screen._select_unit(1)
+	await _right_at(screen, first_station.pos)
+	_check(screen.popup.visible, "actual right click opens context menu")
+	var ground := Vector2(28.5, 31.5)
+	await _right_at(screen, ground)
+	_check(not screen.popup.visible and screen.world.pending_orders.back().kind == "move", "one right click dismisses menu AND queues ground move")
+	_check(screen.selected == [1], "continuous right clicks preserve pawn selection")
+	await _right_at(screen, screen.world.entity(2).pos)
+	_check(screen.popup.visible, "friendly context menu opens")
+	await _right_at(screen, first_station.pos)
+	_check(screen.popup.visible and screen.popup_actions[0].kind == "operate", "next right click replaces friendly menu with station menu")
+	screen.aim_station = int(mortar.id)
+	await _right_at(screen, ground)
+	_check(screen.aim_station < 0 and screen.world.pending_orders.back().kind == "move", "right click exits bombardment AND issues new order")
+	screen._right_click(first_station.pos, Vector2(300, 300))
+	screen._popup_pressed(0)
+	screen.popup.hide()
+	screen.selected.clear()
+	screen.selected_building = int(first_station.id)
+	var enemy = preload("res://scripts/sim/state.gd").unit(901, 1, Vector2(20.5, 12.5))
+	screen.world.units.append(enemy)
+	screen._right_click(enemy.pos, Vector2(300, 300))
+	_check(screen.world.pending_orders.back().kind == "station_attack", "selected station accepts enemy target without selecting operator")
+	screen.world.phase = "running"
+	screen.view.motion.current_projectiles[9100] = {"fraction": 0.5}
+	screen.view.motion.fraction = 0.25
+	screen._queue_sound({"type": "projectile_impact", "step": screen.world.step_index, "projectile_id": 9100}, "impact", -20, 1)
+	screen._flush_sounds(0.01)
+	_check(screen.pending_sounds.size() == 1, "impact sound waits for displayed projectile arrival")
+	screen.view.motion.fraction = 0.75
+	screen._flush_sounds(0.01)
+	_check(screen.pending_sounds.is_empty(), "impact sound consumes once after displayed collision")
+	screen.world.phase = "preparing"
+	screen.view.motion.current_projectiles.clear()
+	screen.view.motion.fraction = 1.0
+	var injury := {"type": "damage", "entity_id": 1, "pos": screen.world.entity(1).pos, "step": 0}
+	screen.view.on_event(injury)
+	_check(screen.view._damage_flash(1) > 0.99, "actual injury produces a unit-specific red flash")
+	var fx_age: float = screen.view.effects.back().age
+	screen.view.advance_display(0.1)
+	_check(screen.view.effects.back().age == fx_age, "pause freezes injury feedback")
 	screen.world.phase = "won"
 	screen.world.time_s = 479.999999999892
 	screen._refresh_hud()
 	_check(screen.timer_label.text == "08:00 / 08:00" and screen.result_label.text.contains("守卫时间  08:00"), "floating-point final second displays as eight minutes")
-	print("UI_CONTRACT_TEST: ", 17 - failures.size(), "/17 passed; failures=", failures)
+	print("UI_CONTRACT_TEST: ", checks - failures.size(), "/", checks, " passed; failures=", failures)
 	for player in screen.audio_players:
 		player.stop()
 		player.stream = null
@@ -65,3 +110,18 @@ func _run() -> void:
 	screen.queue_free()
 	await process_frame
 	call_deferred("quit", 0 if failures.is_empty() else 1)
+
+func _right_at(screen, point: Vector2) -> void:
+	screen.camera.force_update_scroll()
+	var mouse := InputEventMouseButton.new()
+	mouse.button_index = MOUSE_BUTTON_RIGHT
+	mouse.position = screen.get_viewport().get_canvas_transform() * (point * 64.0)
+	mouse.pressed = true
+	screen.get_viewport().push_input(mouse, true)
+	await process_frame
+	mouse = InputEventMouseButton.new()
+	mouse.button_index = MOUSE_BUTTON_RIGHT
+	mouse.position = screen.get_viewport().get_canvas_transform() * (point * 64.0)
+	mouse.pressed = false
+	screen.get_viewport().push_input(mouse, true)
+	await process_frame

@@ -33,10 +33,28 @@ func _draw() -> void:
 	# This CanvasItem has no process callback or redraw requests: Godot retains
 	# the static draw commands while the camera and combat layers keep moving.
 	draw_rect(Rect2(0, 0, 4096, 3072), Color("7b8568"))
+	# Large, subdued patches keep the flat-colour map readable at tactical zoom.
+	for i in range(46):
+		var center := Vector2(110 + (i * 787) % 3840, 90 + (i * 463) % 2850)
+		var radius := Vector2(70 + (i * 29) % 110, 35 + (i * 17) % 60)
+		var patch := PackedVector2Array()
+		for corner in range(10):
+			var angle: float = float(corner) * TAU / 10.0
+			patch.append(center + Vector2(cos(angle), sin(angle)) * radius * (0.85 + 0.15 * sin(float(i + corner * 3))))
+		draw_colored_polygon(patch, Color(0.39, 0.43, 0.32, 0.1) if i % 2 == 0 else Color(0.66, 0.67, 0.48, 0.11))
 	for area in [Rect2i(9, 0, 9, 20), Rect2i(43, 0, 9, 20), Rect2i(0, 18, 15, 7)]:
 		draw_rect(Rect2(Vector2(area.position) * GRID, Vector2(area.size) * GRID), Color("92947c"))
+		var road: Rect2 = Rect2(Vector2(area.position) * GRID, Vector2(area.size) * GRID)
+		for offset in [-0.22, 0.22]:
+			var middle: Vector2 = road.get_center()
+			if area.size.y > area.size.x:
+				draw_line(Vector2(middle.x + road.size.x * offset, road.position.y), Vector2(middle.x + road.size.x * offset, road.end.y), Color(0.39, 0.4, 0.31, 0.12), 13, true)
+			else:
+				draw_line(Vector2(road.position.x, middle.y + road.size.y * offset), Vector2(road.end.x, middle.y + road.size.y * offset), Color(0.39, 0.4, 0.31, 0.12), 13, true)
 	var apron := Rect2(23 * GRID, 27 * GRID, 22 * GRID, 17 * GRID)
 	draw_rect(apron, Color("a8ae99"))
+	draw_line(apron.position + Vector2(2, 2), Vector2(apron.end.x, apron.position.y) + Vector2(-2, 2), Color("c0c4ab"), 3)
+	draw_line(Vector2(apron.end.x, apron.position.y), apron.end, Color(0.28, 0.35, 0.3, 0.16), 5)
 	draw_rect(apron, Color("949e85"), false, 2)
 	for x in range(25, 46, 2):
 		draw_line(Vector2(x * GRID, 27 * GRID), Vector2(x * GRID, 44 * GRID), Color(0.37, 0.4, 0.34, 0.06), 1)

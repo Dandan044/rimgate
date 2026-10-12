@@ -85,14 +85,14 @@ func _review_send(ids: Array, kind: String, data: Dictionary) -> void:
 func _display_review(elapsed: float) -> void:
 	if elapsed >= 3.0 and not display_orders.has("move"):
 		display_orders["move"] = true
-		_review_send([5], "move", {"position": Vector2(29.5, 21.6)})
+		_review_send([5], "move", {"position": Vector2(29.5, 22.5)})
 		_review_send([6], "posture", {"value": 1})
 		_review_send([6], "move", {"position": Vector2(34.5, 23.5)})
 	if elapsed >= 9.0 and not display_orders.has("turn"):
 		display_orders["turn"] = true
 		_review_send([5], "move", {"position": Vector2(25.5, 23.5)})
 		_review_send([6], "posture", {"value": 2})
-		_review_send([6], "move", {"position": Vector2(36.5, 21.6)})
+		_review_send([6], "move", {"position": Vector2(36.5, 22.5)})
 	if elapsed >= 5.0 and not display_orders.has("front"):
 		display_orders["front"] = true
 		screen.camera.zoom = Vector2.ONE * 0.68
@@ -176,6 +176,12 @@ func _process(_dt: float) -> void:
 
 func _validate_reservations() -> void:
 	var w = screen.world
+	var cells: Dictionary = {}
+	for unit in w.units:
+		if unit.dead or not unit.conscious or unit.hp <= 0 or unit.carrier_id >= 0: continue
+		var cell := Vector2i(Vector2(unit.pos).floor())
+		if cells.has(cell): _fail_once("Active units %d/%d share cell %s" % [cells[cell], unit.id, cell])
+		cells[cell] = int(unit.id)
 	for b in w.stations():
 		if b.crew.size() > b.capacity: _fail_once("Station overbooked")
 		for id in b.crew:

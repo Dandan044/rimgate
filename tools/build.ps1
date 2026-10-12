@@ -1,7 +1,7 @@
 param(
     [string]$Godot = "$PSScriptRoot/../.tools/godot/Godot_v4.7.2-stable_win64_console.exe",
     [switch]$SkipTests,
-    [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$')][string]$Version = '0.1.0',
+    [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$')][string]$Version = '0.2.0',
     [string]$ExportDirectory = 'build/windows',
     [switch]$PackageOnly,
     [switch]$ExportOnly
@@ -61,17 +61,22 @@ try {
         reused_export = [bool]$PackageOnly
         executable_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $executable).Hash
         pck_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $pck).Hash
-        test_report = 'docs/TEST_REPORT.md'
+        test_report = 'docs/V2_TEST_REPORT.md'
     }
     # A unique staging folder avoids stale files without recursive deletion.
     $stage = Join-Path $projectRoot ("build/package-$Version-" + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
     Copy-Item -LiteralPath $executable, $pck -Destination $stage
     Copy-Item -LiteralPath 'README.md', 'DEMO_PLAN.md', 'GAME_DESIGN.md', 'docs' -Destination $stage -Recurse
+    Copy-Item -LiteralPath 'DEMO_V2_PLAN.md' -Destination $stage
+    Copy-Item -LiteralPath 'assets/audio/LICENSES.txt' -Destination (Join-Path $stage 'AUDIO_LICENSES.txt')
+    $audioNotices = Join-Path $stage 'source'
+    New-Item -ItemType Directory -Path $audioNotices -Force | Out-Null
+    Copy-Item -LiteralPath 'assets/audio/source/Tabasco-original-license.txt', 'assets/audio/source/Kenney-original-license.txt', 'assets/audio/source/MANIFEST.json' -Destination $audioNotices
     Copy-Item -LiteralPath 'assets/fonts/LICENSE.txt' -Destination (Join-Path $stage 'FONT_LICENSE.txt')
     # Optional generated evidence preserves the relative screenshot/report links.
-    if (Test-Path -LiteralPath 'build/delivery_evidence/build') {
-        Copy-Item -LiteralPath 'build/delivery_evidence/build' -Destination $stage -Recurse
+    if (Test-Path -LiteralPath 'build/v2_delivery_evidence/build') {
+        Copy-Item -LiteralPath 'build/v2_delivery_evidence/build' -Destination $stage -Recurse
     }
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stage 'VERSION.json') -Encoding utf8
     $windowsZip = "$projectRoot/build/Rimgate-demo-v$Version-windows-x64.zip"

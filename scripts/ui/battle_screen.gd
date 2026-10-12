@@ -4,6 +4,7 @@ const World = preload("res://scripts/sim/world.gd")
 const Config = preload("res://scripts/sim/battle_config.gd")
 const WorldView = preload("res://scripts/ui/world_view.gd")
 const MinimapView = preload("res://scripts/ui/minimap.gd")
+const WeaponPose = preload("res://scripts/sim/weapon_pose.gd")
 const GRID: float = 64.0
 const INK: Color = Color("1c2929")
 const TEXT: Color = Color("e8edda")
@@ -29,6 +30,9 @@ var timer_label: Label
 var core_label: Label
 var wave_label: Label
 var title_label: Label
+var combat_state_label: Label
+var combat_progress: ProgressBar
+var alert_button: Button
 var info_label: RichTextLabel
 var selection_label: Label
 var toast_label: Label
@@ -39,6 +43,7 @@ var draft_button: Button
 var posture_option: OptionButton
 var style_option: OptionButton
 var unit_buttons: Array[Button] = []
+var health_bars: Array[ProgressBar] = []
 var popup: PopupMenu
 var popup_actions: Dictionary = {}
 var pause_overlay: Control
@@ -52,8 +57,14 @@ var drag_current: Vector2
 var selecting: bool = false
 var panning: bool = false
 var audio_streams: Dictionary = {}
-var audio_players: Array[AudioStreamPlayer] = []
+var audio_players: Array[AudioStreamPlayer2D] = []
 var sound_index: int = 0
+var pending_sounds: Array[Dictionary] = []
+var voice_priority: Dictionary = {}
+var voice_age: Dictionary = {}
+var last_right_event: int = -1
+var popup_revision: int = 0
+var step_audio_at: Dictionary = {}
 var reload_active: Dictionary = {}
 var ui_font: Font
 var review_capture_path: String = ""
@@ -73,6 +84,9 @@ func _ready() -> void:
 	camera.position = Vector2(32, 33) * GRID
 	camera.zoom = Vector2.ONE * 0.42
 	add_child(camera)
+	var listener := AudioListener2D.new()
+	camera.add_child(listener)
+	listener.make_current()
 	view = WorldView.new()
 	view.screen = self
 	view.world = world
@@ -124,6 +138,7 @@ func _process(delta: float) -> void:
 		refresh_time = 0
 		_refresh_hud()
 	view.advance_display(delta)
+	_flush_sounds(delta)
 	view.queue_redraw()
 	minimap.queue_redraw()
 	if review_capture_path != "" and not review_captured:
@@ -131,6 +146,28 @@ func _process(delta: float) -> void:
 		if review_wait > 0.5 and (review_time < 0 or world.time_s >= review_time):
 			review_captured = true
 			capture_review_frame(review_capture_path)
+
+func _input(event: InputEvent) -> void:
+	# Receive tactical right clicks before an open context menu consumes them.
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
+		_dispatch_right_click(event.position, event.get_instance_id())
+
+func _popup_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT:
+		popup.set_input_as_handled()
+		if event.pressed: _dispatch_right_click(event.position + Vector2(popup.position), event.get_instance_id())
+
+func _dispatch_right_click(point: Vector2, event_id: int) -> void:
+	if event_id == last_right_event: return
+	last_right_event = event_id
+	if _over_hud(point) or pause_overlay.visible or result_overlay.visible: return
+	popup.hide()
+	popup_revision += 1
+	popup_actions.clear()
+	aim_station = -1
+	selecting = false
+	_right_click(viewport_to_grid(point), point)
+	get_viewport().set_input_as_handled()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -167,11 +204,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		if _over_hud(mouse) or pause_overlay.visible or result_overlay.visible:
 			return
 		if event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
-			if aim_station >= 0:
-				aim_station = -1
-				show_toast("已取消轰击瞄点")
-			else:
-				_right_click(grid_point, mouse)
+			_dispatch_right_click(mouse, event.get_instance_id())
 		if event.button_index == MOUSE_BUTTON_LEFT:
 			if event.pressed:
 				if aim_station >= 0:
@@ -246,10 +279,20 @@ func _build_hud() -> void:
 	stack.add_child(people)
 	for id in range(1, 7):
 		var card: Button = _button("%02d\n待命" % id, _unit_card_pressed.bind(id))
-		card.custom_minimum_size = Vector2(112, 49)
+		card.custom_minimum_size = Vector2(112, 62)
 		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		people.add_child(card)
 		unit_buttons.append(card)
+		var health := ProgressBar.new()
+		health.show_percentage = false
+		health.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		health.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+		health.offset_left = 9; health.offset_right = -9
+		health.offset_top = -7; health.offset_bottom = -4
+		health.add_theme_stylebox_override("background", _style(Color("1d2c29"), Color.TRANSPARENT, 2, 0))
+		health.add_theme_stylebox_override("fill", _style(Color("8ac6a9"), Color.TRANSPARENT, 2, 0))
+		card.add_child(health)
+		health_bars.append(health)
 	var actions: HBoxContainer = HBoxContainer.new()
 	actions.add_theme_constant_override("separation", 8)
 	stack.add_child(actions)
@@ -280,17 +323,31 @@ func _build_hud() -> void:
 	actions.add_child(fire_button)
 	var instruction: Label = _label("左键 / 框选  ·  Shift 增选  ·  右键移动 / 操控 / 救援  ·  WASD / 中键拖动  ·  滚轮缩放", 13, MUTED)
 	stack.add_child(instruction)
+	alert_button = _button("", _locate_alert)
+	alert_button.custom_minimum_size.y = 24
+	alert_button.add_theme_font_size_override("font_size", 13)
+	alert_button.visible = false
+	stack.add_child(alert_button)
 	inspector = _panel(hud)
 	var detail: VBoxContainer = VBoxContainer.new()
 	detail.add_theme_constant_override("separation", 8)
 	inspector.add_child(detail)
 	title_label = _label("守住核心设施", 19, ACCENT)
 	detail.add_child(title_label)
+	combat_state_label = _label("战场待命", 16, Color("d4dcbe"))
+	detail.add_child(combat_state_label)
+	combat_progress = ProgressBar.new()
+	combat_progress.show_percentage = false
+	combat_progress.custom_minimum_size.y = 5
+	combat_progress.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	combat_progress.add_theme_stylebox_override("background", _style(Color("162724"), Color.TRANSPARENT, 2, 0))
+	combat_progress.add_theme_stylebox_override("fill", _style(ACCENT, Color.TRANSPARENT, 2, 0))
+	detail.add_child(combat_progress)
 	info_label = RichTextLabel.new()
 	info_label.bbcode_enabled = true
 	info_label.fit_content = false
 	info_label.scroll_active = false
-	info_label.custom_minimum_size = Vector2(0, 240)
+	info_label.custom_minimum_size = Vector2(0, 210)
 	info_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	info_label.add_theme_color_override("default_color", TEXT)
 	info_label.add_theme_font_size_override("normal_font_size", 14)
@@ -305,7 +362,9 @@ func _build_hud() -> void:
 	hud.add_child(toast_label)
 	popup = PopupMenu.new()
 	popup.theme = theme
+	popup.exclusive = false
 	popup.id_pressed.connect(_popup_pressed)
+	popup.window_input.connect(_popup_input)
 	add_child(popup)
 	pause_overlay = _make_modal("指挥暂停", false)
 	result_overlay = _make_modal("守卫结果", true)
@@ -379,13 +438,13 @@ func _layout_hud() -> void:
 	var size: Vector2 = get_viewport_rect().size
 	top.position = Vector2(12, 10)
 	top.size = Vector2(size.x - 24, 66)
-	bottom.position = Vector2(12, size.y - 194)
-	bottom.size = Vector2(size.x - 354, 182)
+	bottom.position = Vector2(12, size.y - 218)
+	bottom.size = Vector2(size.x - 354, 206)
 	inspector.position = Vector2(size.x - 330, 88)
-	inspector.size = Vector2(318, 330)
+	inspector.size = Vector2(318, 360)
 	minimap.position = Vector2(size.x - 330, size.y - 254)
 	minimap.size = Vector2(318, 242)
-	toast_label.position = Vector2(20, size.y - 231)
+	toast_label.position = Vector2(20, size.y - 252)
 	toast_label.size = Vector2(size.x - 374, 28)
 	if size.x < 1420:
 		for card in unit_buttons:
@@ -428,10 +487,15 @@ func _refresh_hud() -> void:
 		var u: Dictionary = world.entity(i + 1)
 		if u.is_empty(): continue
 		var status: String = "阵亡" if u.dead else ("昏迷" if not u.conscious else String(u.status))
+		var weapon_holder: Dictionary = _display_weapon_holder(u)
+		if u.conscious and not u.dead and u.job == "operate" and u.stage == "station": status = String(weapon_holder.get("status", status))
+		var ready_ammo: int = int(weapon_holder.get("loaded", 0))
+		if weapon_holder.get("kind", "") == "mortar": ready_ammo += int(weapon_holder.get("ammo", 0))
 		var pending: String = ""
 		for order in world.pending_orders:
 			if order.ids.has(i + 1): pending = " · 待执行"
-		unit_buttons[i].text = "%02d  %d%%\n%s%s" % [i + 1, int(maxf(0, u.hp) / u.max_hp * 100), status, pending]
+		unit_buttons[i].text = "%02d  %d%%  · %d发\n%s%s" % [i + 1, int(maxf(0, u.hp) / u.max_hp * 100), ready_ammo, status, pending]
+		health_bars[i].value = maxf(0, u.hp) / u.max_hp * 100
 		var icon_name: String = ""
 		if not u.conscious and not u.dead: icon_name = "downed"
 		elif u.job == "rout": icon_name = "rout"
@@ -439,11 +503,17 @@ func _refresh_hud() -> void:
 		elif "阻" in String(u.status): icon_name = "blocked"
 		unit_buttons[i].icon = load("res://assets/icons/%s.svg" % icon_name) if icon_name != "" else null
 		unit_buttons[i].modulate = Color("b8efd2") if selected.has(i + 1) else (Color("8a8d80") if u.dead else Color.WHITE)
-		unit_buttons[i].tooltip_text = "步枪 %d + %d  /  绷带 %d  /  压制 %d\n%s" % [int(u.loaded), int(u.reserve), int(u.bandages), int(u.suppression), u.status]
+		unit_buttons[i].tooltip_text = "%s %d + %d  /  绷带 %d  /  压制 %d\n%s" % ["步枪" if weapon_holder.has("team") else String(weapon_holder.name), int(weapon_holder.loaded), int(weapon_holder.get("ammo", weapon_holder.get("reserve", 0))), int(u.bandages), int(u.suppression), u.status]
 	for holder in world.units + world.buildings:
 		var reloading: bool = float(holder.get("reload_progress", 0.0)) > 0
-		if reloading and not reload_active.get(int(holder.id), false): _play_sound("reload", -19)
+		if reloading and not reload_active.get(int(holder.id), false):
+			var name: String = "reload_mg_01" if holder.get("kind", "") == "mg" else ("mortar_load_01" if holder.get("kind", "") == "mortar" else "reload")
+			_play_sound(name, -19, holder.pos, 2)
 		reload_active[int(holder.id)] = reloading
+	var critical: Dictionary = _critical_unit()
+	alert_button.visible = not critical.is_empty()
+	if not critical.is_empty():
+		alert_button.text = "⚠ %02d · %s  [点击定位]" % [int(critical.id), "伤员持续出血" if critical.bleed_rate > 0 else ("昏迷等待救援" if not critical.conscious else "弹药耗尽")]
 	_refresh_inspector()
 	if world.phase in ["won", "lost"]:
 		result_overlay.show()
@@ -461,31 +531,73 @@ func _refresh_inspector() -> void:
 	var b: Dictionary = world.entity(selected_building) if selected_building >= 0 else {}
 	if not b.is_empty():
 		title_label.text = String(b.name)
+		_refresh_combat_status(b)
 		var crew: Array[int] = world.projected_crew(int(b.id))
 		info_label.text = "耐久  [color=#b4dfbd]%d / %d[/color]\n" % [maxi(0, int(b.hp)), int(b.max_hp)]
 		if int(b.capacity) > 0:
 			info_label.text += "岗位  %d / %d  %s\n状态  %s\n" % [crew.size(), int(b.capacity), str(crew), b.status]
 			info_label.text += "弹药  %d 已装 / %d 备用\n" % [int(b.loaded), int(b.ammo)] if b.kind == "mg" else "炮弹库存  %d / %d\n" % [int(b.ammo), int(b.ammo_capacity)]
 			info_label.text += "待交付预约  %d\n\n" % int(b.supply_reserved)
-			info_label.text += "右键：安排操控或搬运补给\n" + ("选中后按 F 选择轰击落点\n每次命令发射一枚炮弹" if b.kind == "mortar" else "右键敌人可给机枪指定目标\n射界固定朝北 120°")
+			info_label.text += "右键工事：操控 / 搬运补给\n右键敌人：指定工事目标\n" + ("按 F 指定地面落点\n单次命令发射一枚炮弹" if b.kind == "mortar" else "固定射界 120°，枪身随目标转向")
 		else:
-			info_label.text += "高度  %.2f  /  单格屏蔽 %.2f\n\n" % [float(b.height), float(b.screen_volume)]
+			if b.get("barrier_type", "") == "wall": info_label.text += "墙体 · 完全阻挡直射\n禁止穿行和翻越\n\n"
+			else: info_label.text += "高度  %.2f  /  单格屏蔽量 %.2f\n\n" % [float(b.height), float(b.get("screening_strength", b.screen_volume * 4.0))]
 			info_label.text += "耐久归零后失去遮挡与掩护。\n右键可以显式攻击建筑。"
 		return
 	var u: Dictionary = world.entity(selected[0]) if not selected.is_empty() else world.entity(inspected_enemy)
 	if not u.is_empty():
+		_refresh_combat_status(u)
 		title_label.text = ("守军 %02d" % int(u.id)) if int(u.team) == 0 else ("重装步兵" if u.kind == "heavy" else ("侧翼队员" if u.kind == "flanker" else "敌方射手"))
 		var pose: String = ["站立", "蹲伏", "卧倒"][clampi(int(u.posture), 0, 2)]
 		info_label.text = "生命  [color=#b4dfbd]%d / %d[/color]\n压制  %d / 100  ·  稳定 %d%%\n姿态  %s  ·  %s\n步枪  %d / %d 发\n出血  [color=#e8b296]%.2f / 秒[/color]\n绷带  %d  ·  护甲 %.0f\n当前  %s\n" % [maxi(0, int(u.hp)), int(u.max_hp), int(u.suppression), int(u.stability * 100), pose, "自动" if int(u.posture_mode) < 0 else "锁定", int(u.loaded), int(u.reserve), float(u.bleed_rate), int(u.bandages), float(u.armor), u.status]
+		var holder: Dictionary = _display_weapon_holder(u)
+		if int(holder.id) != int(u.id):
+			info_label.text = info_label.text.replace("步枪  %d / %d 发" % [int(u.loaded), int(u.reserve)], "%s  %d + %d 发" % [String(holder.name), int(holder.loaded), int(holder.ammo)])
 		if hover_enemy >= 0 and int(u.team) == 0:
 			var foe: Dictionary = world.entity(hover_enemy)
-			var cover: Dictionary = world.cover_for(u, foe.pos)
+			var cover: Dictionary = world.cover_for(u, Vector2(WeaponPose.aimed_rifle(foe.pos, u.pos, int(foe.posture)).muzzle))
 			info_label.text += "\n来自悬停敌人的保护：\n" + ("完全遮挡" if cover.get("blocked", false) else "掩体拦截 %d%%" % int(float(cover.get("chance", 0)) * 100))
 		else:
 			info_label.text += "\n悬停敌人查看对应方向掩护。\n征召单位不会自行换位找掩体。"
 		return
 	title_label.text = "守住核心设施"
+	combat_state_label.text = "实时战斗 · 随时暂停指挥"
+	combat_progress.visible = false
 	info_label.text = "[color=#b7d5bd]6 人 · 2 挺机枪 · 1 门迫击炮[/color]\n\n所有设施已经预置。安排人员操作重武器，及时从补给点搬弹；救人和止血同样占用人手。\n\n坚持 8 分钟即可完成守卫。\n\n[color=#e4bb87]炮击和流弹能够伤害友军。[/color]\n救护区药品：%d" % int(world.medical_stock)
+
+func _display_weapon_holder(unit: Dictionary) -> Dictionary:
+	if unit.get("job", "") == "operate":
+		var station: Dictionary = world.entity(int(unit.get("station_id", -1)))
+		if not station.is_empty(): return station
+	return unit
+
+func _refresh_combat_status(source: Dictionary) -> void:
+	var holder: Dictionary = _display_weapon_holder(source) if source.has("team") else source
+	var state: String = String(holder.get("weapon_state", "idle"))
+	var labels := {"idle": "待命", "aiming": "瞄准", "firing": "射击", "recovering": "射后恢复", "reloading": "装填", "blocked": "目标受阻"}
+	combat_state_label.text = String(labels.get(state, state)) + "  ·  " + String(holder.get("status", ""))
+	var target: Dictionary = world.entity(int(holder.get("target_id", -1)))
+	if not target.is_empty(): combat_state_label.text += "\n锁定目标 %s" % String(target.get("name", target.id))
+	combat_progress.visible = state in ["aiming", "reloading"] or holder.get("stage", "") == "treatment"
+	var progress: float = float(holder.get("aim_fraction", 0.0))
+	if state == "reloading": progress = float(holder.get("reload_progress", 0.0)) / (5.0 if holder.get("kind", "") == "mg" else (10.0 if holder.get("kind", "") == "mortar" else 3.0))
+	if holder.get("stage", "") == "treatment": progress = float(holder.get("job_timer", 0.0)) / 6.0
+	combat_progress.value = clampf(progress, 0, 1) * 100.0
+
+func _critical_unit() -> Dictionary:
+	var best: Dictionary = {}
+	var score: float = 0.0
+	for unit in world.units:
+		if unit.team != 0 or unit.dead: continue
+		var holder: Dictionary = _display_weapon_holder(unit)
+		var empty: bool = int(holder.loaded) == 0 and int(holder.get("reserve", holder.get("ammo", 0))) == 0
+		var urgency: float = (1000.0 if not unit.conscious else 0.0) + float(unit.bleed_rate) * 100.0 + (20.0 if empty else 0.0)
+		if urgency > score: score = urgency; best = unit
+	return best
+
+func _locate_alert() -> void:
+	var unit: Dictionary = _critical_unit()
+	if not unit.is_empty(): _unit_card_pressed(int(unit.id))
 
 func mouse_world() -> Vector2:
 	return get_global_mouse_position() / GRID
@@ -546,14 +658,24 @@ func _unit_card_pressed(id: int) -> void:
 		_clamp_camera()
 
 func _right_click(point: Vector2, screen_point: Vector2) -> void:
+	popup.hide()
+	popup_revision += 1
+	popup_actions.clear()
 	var u: Dictionary = _pick_unit(point)
 	if not u.is_empty():
 		if int(u.team) == 1:
+			var chosen_station: Dictionary = world.entity(selected_building)
+			if not chosen_station.is_empty() and int(chosen_station.get("capacity", 0)) > 0:
+				var response: Dictionary = world.submit_station_attack(selected_building, int(u.id))
+				show_toast("工事攻击命令已安排" if response.get("ok", false) else String(response.get("reason", "工事无法攻击")), 3)
+				if response.get("ok", false): _play_sound("order")
+				_refresh_hud()
+				return
 			for id in selected:
 				var friendly: Dictionary = world.entity(id)
 				var station: Dictionary = world.entity(int(friendly.station_id))
 				if not station.is_empty() and station.kind == "mortar":
-					show_toast("迫击炮请使用“轰击 [F]”指定地面落点")
+					show_toast("请先选中迫击炮，再右键敌人；F可轰击地面")
 					return
 			_send("attack", {"target_id": u.id})
 		else:
@@ -574,10 +696,11 @@ func _right_click(point: Vector2, screen_point: Vector2) -> void:
 			if b.kind == "mortar":
 				_menu_item("轰击地面 [F]", "aim", {"target_id": b.id}, crew.is_empty(), "需要已安排的炮手")
 		_menu_item("攻击建筑", "attack", {"target_id": b.id}, selected.is_empty(), "也可以攻击己方建筑，请注意误伤")
-		_show_popup(screen_point)
 		_refresh_hud()
+		_show_popup(screen_point)
 		return
-	_send("move", {"position": point})
+	selected_building = -1
+	_send("move", {"position": Vector2(Vector2i(point.floor())) + Vector2.ONE * 0.5})
 
 func _menu_item(text: String, kind: String, data: Dictionary, disabled: bool, tooltip: String) -> void:
 	var id: int = popup.item_count
@@ -589,6 +712,12 @@ func _menu_item(text: String, kind: String, data: Dictionary, disabled: bool, to
 	popup_actions[id] = {"kind": kind, "data": data}
 
 func _show_popup(point: Vector2) -> void:
+	# Finish this mouse event's focus change before opening the replacement
+	# embedded window. Otherwise Popup schedules a focus-loss hide of the new menu.
+	_open_context_deferred.call_deferred(point, popup_revision)
+
+func _open_context_deferred(point: Vector2, revision: int) -> void:
+	if revision != popup_revision or popup_actions.is_empty(): return
 	popup.position = Vector2i(point)
 	popup.reset_size()
 	popup.popup()
@@ -698,6 +827,8 @@ func _toggle_pause() -> void:
 func _sync_pause() -> void:
 	view.set_running(world.phase == "running")
 	get_tree().paused = world.phase != "running"
+	for index in range(audio_players.size()):
+		audio_players[index].stream_paused = world.phase in ["preparing", "paused"] and int(voice_priority.get(index, 0)) < 5
 
 func _open_pause_menu() -> void:
 	if result_overlay.visible: return
@@ -721,7 +852,12 @@ func _restart() -> void:
 	view.visual_time = 0
 	view.reset_presentation()
 	reload_active.clear()
+	step_audio_at.clear()
+	pending_sounds.clear()
+	voice_priority.clear()
+	voice_age.clear()
 	popup.hide()
+	popup_revision += 1
 	selecting = false
 	panning = false
 	pause_overlay.hide()
@@ -745,34 +881,93 @@ func _check_events() -> void:
 		match String(event.type):
 			"weapon_fired":
 				var kind: String = event.get("weapon_kind", event.get("kind", "rifle"))
-				_play_sound("mortar" if kind == "mortar" else ("mg_%d" % (int(event.serial) % 2 + 1) if kind == "mg" else "rifle_%d" % (int(event.serial) % 2 + 1)), -15)
-			"explosion": _play_sound("explosion_%d" % (int(event.serial) % 2 + 1), -7)
-			"projectile_impact": _play_sound("impact", -24)
+				_queue_sound(event, "mortar" if kind == "mortar" else ("mg_%d" % (int(event.serial) % 2 + 1) if kind == "mg" else "rifle_%d" % (int(event.serial) % 2 + 1)), -15, 2)
+			"explosion": _queue_sound(event, "explosion_%d" % (int(event.serial) % 2 + 1), -7, 4)
+			"projectile_impact":
+				var entity: Dictionary = world.entity(int(event.get("entity_id", -1)))
+				var material: String = String(event.get("material", "ground"))
+				var name: String = "impact"
+				if material == "sandbag" or entity.get("kind", "") == "sandbag": name = "impact_sand_01"
+				elif material == "concrete" or entity.get("kind", "") == "wall": name = "impact_wall_01"
+				elif material in ["metal", "armor"]: name = "impact_metal_01"
+				elif material == "unit": name = "hit"
+				_queue_sound(event, name, -23, 1)
 			"damage":
-				if int(event.get("target_team", 1)) == 0: _play_sound("hit", -18)
-			"reload_started": _play_sound("reload", -18)
+				if int(event.get("target_team", 1)) == 0 and String(event.get("weapon_kind", "")) in ["blast", "melee"]:
+					_queue_sound(event, "hit", -23, 2)
+			"unit_state_changed":
+				if event.get("state", "") in ["unconscious", "routed"]:
+					var unit: Dictionary = world.entity(int(event.get("unit_id", -1)))
+					if unit.get("team", 1) == 0:
+						_play_sound("alert", -10, Vector2.INF, 9)
+						show_toast("守军 %02d %s" % [int(unit.id), "倒地，需要救援" if event.state == "unconscious" else "溃逃，暂时无法征召"], 5)
+			"unit_action_stage":
+				var stage: String = String(event.get("stage", ""))
+				if stage == "treatment": _queue_sound(event, "bandage_01", -17, 3)
+				elif stage in ["station", "pickup_patient", "drop_patient"]: _queue_sound(event, "station_handle_01", -21, 2)
 			"wave_started":
 				show_toast("第 %d 波敌人来袭，请检查前沿与侧翼！" % int(event.get("wave", 1)), 5)
-				_play_sound("alert", -9)
+				_play_sound("alert", -9, Vector2.INF, 9)
 			"order_rejected": show_toast(String(event.get("reason", "命令不可执行")), 4)
-			"battle_ended": _play_sound("victory" if event.get("result", "lost") == "won" else "defeat", -6)
+			"battle_ended": _play_sound("victory" if event.get("result", "lost") == "won" else "defeat", -6, Vector2.INF, 10)
+
+func _queue_sound(event: Dictionary, name: String, volume: float, priority: int) -> void:
+	pending_sounds.append({"event": event, "name": name, "volume": volume, "priority": priority})
+	if pending_sounds.size() > 128: pending_sounds.pop_front()
+
+func _flush_sounds(delta: float) -> void:
+	for index in range(audio_players.size()):
+		voice_age[index] = float(voice_age.get(index, 0.0)) + delta
+	if world.phase == "paused" or world.phase == "preparing": return
+	if world.phase == "running":
+		for unit in world.units:
+			if not unit.conscious or unit.dead or unit.velocity.length_squared() < 0.1: continue
+			if world.time_s < float(step_audio_at.get(int(unit.id), 0.0)): continue
+			step_audio_at[int(unit.id)] = world.time_s + (0.48 if int(unit.posture) == 0 else 0.7)
+			var concrete: bool = Rect2(23, 27, 22, 17).has_point(unit.pos)
+			var footstep: String = "step_concrete_01" if concrete else ("step_01" if (int(unit.id) + int(world.step_index)) % 2 == 0 else "step_02")
+			_play_sound(footstep, -31, unit.pos, 0, int(unit.id) + int(world.step_index))
+	for index in range(pending_sounds.size() - 1, -1, -1):
+		var sound: Dictionary = pending_sounds[index]
+		if not view.motion.event_ready(sound.event): continue
+		_play_sound(sound.name, sound.volume, sound.event.get("pos", Vector2.INF), sound.priority, int(sound.event.get("serial", 0)))
+		pending_sounds.remove_at(index)
 
 func _load_audio() -> void:
-	for name in ["rifle_1", "rifle_2", "mg_1", "mg_2", "mortar", "explosion_1", "explosion_2", "impact", "hit", "reload", "order", "alert", "victory", "defeat"]:
+	for name in ["rifle_1", "rifle_2", "mg_1", "mg_2", "mortar", "explosion_1", "explosion_2", "impact", "hit", "reload", "order", "alert", "victory", "defeat", "bandage_01", "station_handle_01", "step_01", "step_02", "step_concrete_01", "impact_metal_01", "impact_sand_01", "impact_wall_01", "reload_mg_01", "mortar_load_01"]:
 		var path: String = "res://assets/audio/%s.wav" % name
 		if ResourceLoader.exists(path): audio_streams[name] = load(path)
 	for i in range(24):
-		var player: AudioStreamPlayer = AudioStreamPlayer.new()
+		var player := AudioStreamPlayer2D.new()
+		player.max_distance = 3200.0
+		player.attenuation = 1.2
+		player.panning_strength = 1.1
 		add_child(player)
 		audio_players.append(player)
 
-func _play_sound(name: String, volume: float = -13) -> void:
+func _play_sound(name: String, volume: float = -13, position: Vector2 = Vector2.INF, priority: int = 5, variation: int = 0) -> void:
 	if not audio_streams.has(name) or audio_players.is_empty(): return
-	var player: AudioStreamPlayer = audio_players[sound_index % audio_players.size()]
+	var choice: int = -1
+	var lowest: int = 100
+	var oldest: float = -1.0
+	for offset in range(audio_players.size()):
+		var index: int = (sound_index + offset) % audio_players.size()
+		if not audio_players[index].playing: choice = index; break
+		var current_priority: int = int(voice_priority.get(index, 0))
+		var age: float = float(voice_age.get(index, 0.0))
+		if current_priority <= priority and (current_priority < lowest or (current_priority == lowest and age > oldest)):
+			choice = index; lowest = current_priority; oldest = age
+	if choice < 0: return
+	var player: AudioStreamPlayer2D = audio_players[choice]
 	sound_index += 1
+	voice_priority[choice] = priority
+	voice_age[choice] = 0.0
+	player.position = camera.position if position == Vector2.INF else position * GRID
 	player.stream = audio_streams[name]
 	player.volume_db = volume
+	player.pitch_scale = 1.0 if variation == 0 else 0.97 + float((variation * 17) % 7) * 0.01
 	player.play()
+	player.stream_paused = world.phase in ["preparing", "paused"] and priority < 5
 
 func _over_hud(point: Vector2) -> bool:
 	return top.get_global_rect().has_point(point) or bottom.get_global_rect().has_point(point) or inspector.get_global_rect().has_point(point) or minimap.get_global_rect().has_point(point)
@@ -802,8 +997,8 @@ func apply_review_orders() -> void:
 	world.submit([1], "operate", {"target_id": world.stations()[0].id})
 	world.submit([2], "operate", {"target_id": world.stations()[1].id})
 	world.submit([3, 4], "operate", {"target_id": world.stations()[2].id})
-	world.submit([5], "move", {"position": Vector2(25.5, 21.6)})
-	world.submit([6], "move", {"position": Vector2(36.5, 21.6)})
+	world.submit([5], "move", {"position": Vector2(25.5, 22.5)})
+	world.submit([6], "move", {"position": Vector2(36.5, 22.5)})
 	selected = [1, 2, 3, 4, 5, 6]
 	world.start_battle()
 	_sync_pause()
@@ -821,6 +1016,9 @@ func _parse_review_args() -> void:
 		elif argument.begins_with("--review-capture="): review_capture_path = argument.trim_prefix("--review-capture=")
 		elif argument.begins_with("--review-time="): review_time = float(argument.trim_prefix("--review-time="))
 		elif argument.begins_with("--review-zoom="): camera.zoom = Vector2.ONE * clampf(float(argument.trim_prefix("--review-zoom=")), 0.24, 1.2)
+		elif argument.begins_with("--review-center="):
+			var center: PackedStringArray = argument.trim_prefix("--review-center=").split(",")
+			if center.size() == 2: camera.position = Vector2(float(center[0]), float(center[1])) * GRID
 		elif argument == "--review-quit": review_quit = true
 
 func _exit_tree() -> void:

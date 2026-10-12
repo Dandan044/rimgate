@@ -1,0 +1,104 @@
+[
+  {
+    "file": "tabasco_sks.wav",
+    "seconds": 15.517958333333333,
+    "source_sha256": "236b1fbc029dd44efe930c9a75d383a92b2ae72b69a78b44830e449e83da61a4",
+    "pcm_sha256": "57d81930002383ba7263a87dde04fc80d4d88eee1fb53f62812d6653f9095742"
+  },
+  {
+    "file": "tabasco_mosin.wav",
+    "seconds": 14.711354166666666,
+    "source_sha256": "ece6fff8f3b21aa8bc41943c0293d3fab6a553db33dd2427a388838324a39719",
+    "pcm_sha256": "fb246b1ad2cca3c41e201b0e5d02f825e9fafac084e5c7aa356a0737ccae6e4d"
+  },
+  {
+    "file": "tabasco_shotty.wav",
+    "seconds": 0.6979166666666666,
+    "source_sha256": "2e4b51fafbc93ea2b9aa0cf2428d6bad6cfa79817f2d0d7aa38c64dc97afa02f",
+    "pcm_sha256": "1e8b9b35be84891ba11d0998457b2ff8fd2280f20a023ddaa7d79d1c542519ac"
+  },
+  {
+    "file": "kenney_footstep_grass_000.wav",
+    "seconds": 0.7746875,
+    "source_sha256": "9d49497777405d78d7cf7f2888e28277f3a23192300cfd1d79d54876b20f479f",
+    "pcm_sha256": "d8623fe3e913d33de0cbfb5cb98d2d7a7571b8c5e12e2841a119ac301d34693f"
+  },
+  {
+    "file": "kenney_footstep_grass_001.wav",
+    "seconds": 0.6707083333333334,
+    "source_sha256": "fb28781bd22b2eefdc14077f1adf5c94d7fe9c3a130194633b55f3e0d39d9f04",
+    "pcm_sha256": "4813cff5cbc6f0f2ae3c987e0143a0eb3fd305a4d55001ce39b6d8f9346bf176"
+  },
+  {
+    "file": "kenney_footstep_concrete_000.wav",
+    "seconds": 0.10302083333333334,
+    "source_sha256": "d7267e183067757c92c169de2a379abea592cfca6b39bb2e8feea15221ad79fe",
+    "pcm_sha256": "adb1db4db265e3d96ebb6627166aed4d52e842f815cbd99a052a5bf6c0555d77"
+  },
+  {
+    "file": "kenney_impactMetal_light_000.wav",
+    "seconds": 0.37297916666666664,
+    "source_sha256": "33b5e6e37c6e9d54e07bf5a89b12c76e879f40c1ea83cdd82714df1d6f9fec6d",
+    "pcm_sha256": "9b0fcfa4f648d2a633a5b2be9d8e54db37c7e07f2471e8a413bd770da6421409"
+  },
+  {
+    "file": "kenney_impactMetal_medium_001.wav",
+    "seconds": 0.1405625,
+    "source_sha256": "e8a9eaba7c4d27422e4eeb3e6c7100d5d7dc0f83e005efc98c960adcc5265337",
+    "pcm_sha256": "31b7ba6c51c85afa7fa9f900fc78062068f6b6a46b7dbd8bccda1361a3dc1ae0"
+  },
+  {
+    "file": "kenney_impactMining_000.wav",
+    "seconds": 0.9374583333333333,
+    "source_sha256": "36b4ea107222d073c67ca64dde26944975609202d5090b2f2021213c1a7e35cd",
+    "pcm_sha256": "a7ff88b69593d3724eb3fbdbf195b880b0371a08d028bf7e1740e3be01c8b76a"
+  },
+  {
+    "file": "kenney_impactSoft_medium_000.wav",
+    "seconds": 0.11510416666666666,
+    "source_sha256": "7d3ba0bb5e60a11b5d3e558c141303dcf494256675fbf753c0d252d2cf0481e3",
+    "pcm_sha256": "2c13277d5a98376951bef87d002cf6d46d604c081ee2f019853e207197c3dc66"
+  },
+  {
+    "file": "kenney_impactSoft_heavy_001.wav",
+    "seconds": 0.5691458333333334,
+    "source_sha256": "4d0096364ba9e46119d2ff6df493fdc101bd2e1efae061da5e5f77a53b3fdcb6",
+    "pcm_sha256": "d1ae46a8f6d735d979deaf061c1f2b7f34f0f231573d708d9c5fb56154aa39eb"
+  },
+  {
+    "file": "kenney_impactWood_medium_000.wav",
+    "seconds": 0.32979166666666665,
+    "source_sha256": "1723a9fd25103ed41af06054814e84e65f4a772bac86ab2dc927da93d9592ff5",
+    "pcm_sha256": "7a07334b0d314716b27d4e8fcf752eb58b12aa3952f282b3005f87b5474a4bf7"
+  },
+  {
+    "file": "kenney_impactPlate_light_000.wav",
+    "seconds": 0.5424375,
+    "source_sha256": "6e797cf8a5bfc52d7ed5eb47c227974c1cf2a674954fec5b539cea7d62c7282c",
+    "pcm_sha256": "899b6dcdbb848037c42713def1459f3c2c26d92ffb66409a449f7873b16d0af6"
+  },
+  {
+    "file": "kenney_impactTin_medium_000.wav",
+    "seconds": 0.1558125,
+    "source_sha256": "f4bbee66ca191ec744b84fc07ac9ed2a6fda955d51cfed8360f12b62815d3cbd",
+    "pcm_sha256": "0b1934d5a80d340d46afa50bce4cc65a1330d175bcf0c0895c05c4e40a5d1401"
+  },
+  {
+    "file": "springy_reload.wav",
+    "seconds": 1.55575,
+    "source_sha256": "efb2d724d634eabe6ba8d3065686abca848bb7497d4d43a5e4aed5e5ea23016f",
+    "pcm_sha256": "61433af14057114ff8aec7d11ad464f1edd3e25c99cf73fc764efc7da093d42d"
+  },
+  {
+    "file": "springy_cock.wav",
+    "seconds": 0.47383333333333333,
+    "source_sha256": "33e007321ba83301c861aef573f2c40b70bc62f8f24c0164877e6dd123e24371",
+    "pcm_sha256": "8c0618d13e9da6c6f1fe983c707223a250b707280e9f29d44e297b0b3c64587b"
+  },
+  {
+    "file": "nenad_boom.wav",
+    "seconds": 5.142875,
+    "source_sha256": "13a0bf75af94ec6d332bc71cba489b573466e05c4b17288158b3d683b41de39f",
+    "pcm_sha256": "55f7db99e888e82c5f0bb213df34e11d27bad2d08a12773b814e8b59b8981012"
+  }
+]

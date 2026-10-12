@@ -39,13 +39,22 @@ func reset() -> void:
 	stats = {"rifle_shots": 0, "mg_shots": 0, "mortar_shots": 0, "enemy_spawned": 0, "friendly_fire": 0, "damage": 0.0, "ammo_destroyed": 0}
 	for x in [25.5, 27.5, 29.5, 34.5, 36.5, 38.5]:
 		units.append(State.unit(units.size() + 1, 0, Vector2(x, 35.5)))
-	for x in range(14, 25): _add_building("sandbag", Rect2i(x, 20, 1, 1))
-	for x in range(37, 48): _add_building("sandbag", Rect2i(x, 20, 1, 1))
+	for x in range(14, 25): _add_building("sandbag", Rect2i(x, 21, 1, 1))
+	for x in range(37, 48): _add_building("sandbag", Rect2i(x, 21, 1, 1))
 	_add_building("mg", Rect2i(20, 22, 1, 1)); _add_building("mg", Rect2i(43, 22, 1, 1)); _add_building("mortar", Rect2i(32, 29, 1, 1))
+	entity(1022).facing = -3.0 * PI / 4.0
 	for x in range(24, 29): _add_building("sandbag", Rect2i(x, 33, 1, 1))
 	for x in range(36, 41): _add_building("sandbag", Rect2i(x, 33, 1, 1))
 	_add_building("core", Rect2i(30, 36, 4, 4)); _add_building("crate", Rect2i(30, 23, 2, 2))
 	for x in range(38, 44): _add_building("wall", Rect2i(x, 38, 1, 1))
+	# Keep station identities stable, then add open flanks and fallback arms.
+	for y in range(22, 27): _add_building("sandbag", Rect2i(19, y, 1, 1))
+	for y in range(22, 25): _add_building("sandbag", Rect2i(45, y, 1, 1))
+	for y in range(34, 37):
+		_add_building("sandbag", Rect2i(24, y, 1, 1))
+		_add_building("sandbag", Rect2i(40, y, 1, 1))
+	for y in range(27, 31): _add_building("sandbag", Rect2i(13, y, 1, 1))
+	for x in range(14, 17): _add_building("sandbag", Rect2i(x, 27, 1, 1))
 	for y in [40.5, 42.5]:
 		for x in [39.5, 41.5, 43.5]: medical_slots.append(Vector2(x, y))
 	for i in range(14):
@@ -97,13 +106,20 @@ func projected_crew(station_id: int) -> Array[int]:
 
 func submit(ids: Array, kind: String, data: Dictionary = {}) -> Dictionary:
 	if phase in ["won", "lost"]: return {"ok": false, "reason": "战斗已结束"}
-	var checked: Dictionary = unit_system.validate_order(self, ids, kind, data)
+	var checked: Dictionary
+	if kind == "station_attack":
+		checked = combat_system.validate_station_attack(self, int(data.get("station_id", -1)), int(data.get("target_id", -1)))
+	else:
+		checked = unit_system.validate_order(self, ids, kind, data)
 	if not checked.get("ok", false):
 		emit_event("order_rejected", {"reason": checked.get("reason", "命令不可执行")})
 		return checked
 	_order_serial += 1
 	pending_orders.append({"ids": ids.duplicate(), "kind": kind, "data": data.duplicate(true), "serial": _order_serial})
 	return {"ok": true, "reason": ""}
+
+func submit_station_attack(station_id: int, target_id: int) -> Dictionary:
+	return submit([], "station_attack", {"station_id": station_id, "target_id": target_id})
 
 func start_battle() -> void:
 	if phase == "preparing": phase = "running"; emit_event("battle_started")
@@ -115,7 +131,12 @@ func step(dt: float = Config.FIXED_DT) -> void:
 	if phase != "running": return
 	var orders: Array[Dictionary] = pending_orders.duplicate()
 	pending_orders.clear()
-	for order in orders: unit_system.apply_order(self, order.ids, order.kind, order.data)
+	for order in orders:
+		if order.kind == "station_attack":
+			var outcome: Dictionary = combat_system.request_station_attack(self, int(order.data.station_id), int(order.data.target_id))
+			if not outcome.get("ok", false): emit_event("order_rejected", {"reason": outcome.get("reason", "工事攻击不可执行")})
+		else:
+			unit_system.apply_order(self, order.ids, order.kind, order.data)
 	step_index += 1; time_s += dt
 	while next_wave < Config.WAVE_TIMES.size() and time_s + 0.00001 >= Config.WAVE_TIMES[next_wave]:
 		spawn_wave(next_wave); next_wave += 1
@@ -144,13 +165,35 @@ func spawn_wave(index: int) -> void:
 	var groups: Array = [[4, 0, 0, 0], [3, 3, 2, 0], [4, 4, 2, 2]][index]
 	for entry in range(3):
 		for i in range(int(groups[entry])):
-			var p := Vector2(10.6 + i * 1.5, 0.6) if entry == 0 else (Vector2(44.6 + i * 1.5, 0.6) if entry == 1 else Vector2(0.6, 18.6 + i * 2.0))
+			var p := Vector2(10.5 + i * 2.0, 0.5) if entry == 0 else (Vector2(44.5 + i * 2.0, 0.5) if entry == 1 else Vector2(0.5, 18.5 + i * 2.0))
 			_spawn_enemy(p, "flanker" if entry == 2 else "rifleman")
-	for i in range(int(groups[3])): _spawn_enemy(Vector2(45.3 + i * 2.0, 1.8), "heavy")
+	for i in range(int(groups[3])): _spawn_enemy(Vector2(45.5 + i * 2.0, 1.5), "heavy")
 	emit_event("wave_started", {"wave": index + 1})
 
 func _spawn_enemy(pos: Vector2, kind: String) -> void:
-	var enemy := State.unit(_next_enemy_id, 1, pos, kind)
+	var origin := Vector2i(pos.floor())
+	var spawn := Vector2.INF
+	# Waves and the opt-in stress scene share the same collision-safe spawn rule.
+	for radius in range(maxi(Config.MAP_SIZE.x, Config.MAP_SIZE.y)):
+		for dy in range(-radius, radius + 1):
+			for dx in range(-radius, radius + 1):
+				if maxi(absi(dx), absi(dy)) != radius: continue
+				var cell := origin + Vector2i(dx, dy)
+				if cell.x < 0 or cell.y < 0 or cell.x >= Config.MAP_SIZE.x or cell.y >= Config.MAP_SIZE.y: continue
+				var point := Vector2(cell) + Vector2(0.5, 0.5)
+				if not building_at(cell).is_empty(): continue
+				var taken := false
+				for other in units:
+					if not other.dead and Vector2i(Vector2(other.pos).floor()) == cell:
+						taken = true; break
+				if taken or not unit_system.destination_available(self, point): continue
+				spawn = point; break
+			if spawn != Vector2.INF: break
+		if spawn != Vector2.INF: break
+	if spawn == Vector2.INF:
+		emit_event("order_rejected", {"reason": "地图没有可用的敌军进入位置"})
+		return
+	var enemy := State.unit(_next_enemy_id, 1, spawn, kind)
 	enemy.job = "advance"; enemy.goal = core().pos
 	units.append(enemy); _next_enemy_id += 1; stats.enemy_spawned += 1
 

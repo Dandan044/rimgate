@@ -1,5 +1,8 @@
 extends RefCounted
 
+const State = preload("res://scripts/sim/state.gd")
+const Pose = preload("res://scripts/sim/weapon_pose.gd")
+
 var failures: Array[String] = []
 
 func _check(value: bool, message: String) -> void:
@@ -30,7 +33,7 @@ func run(factory: Callable) -> Array[String]:
 	_ticks(w, 400)
 	_check(w.units[0].pos.distance_to(w.units[0].goal) < 0.1, "Continuous movement reaches exact endpoint")
 	_check(not w.submit([1], "move", {"position": Vector2(38.5, 38.5)}).ok, "Wall is not a legal endpoint")
-	_check(not w.submit([1], "move", {"position": Vector2(15.5, 20.5)}).ok, "Low obstacle cannot be a stopping point")
+	_check(not w.submit([1], "move", {"position": Vector2(15.5, 21.5)}).ok, "Low obstacle cannot be a stopping point")
 	var travel = _quiet(factory)
 	travel.units[0].pos = Vector2(8.5, 44.5)
 	travel.submit([1], "move", {"position": Vector2(38.5, 44.5)})
@@ -58,8 +61,8 @@ func run(factory: Callable) -> Array[String]:
 	walker.pos = Vector2(8.5, 44.5)
 	travel.submit([1], "move", {"position": Vector2(10.5, 44.5)}); travel.step()
 	# An arriving conscious unit dynamically occupies the previously free goal.
-	travel.units[1].pos = Vector2(10.5, 44.5); _ticks(travel, 360)
-	_check(walker.job == "idle" and walker.status.contains("阻挡"), "Lateral motion without net progress terminates a genuinely blocked order")
+	travel.units[1].pos = Vector2(10.5, 44.5); travel.units[1].target_id = int(travel.core().id); travel.units[1].loaded = 0; travel.units[1].reserve = 0; _ticks(travel, 360)
+	_check(walker.job == "idle" and walker.status.contains("阻挡") and travel.units[1].pos == Vector2(10.5, 44.5), "A held personal attack is never displaced and a permanently occupied destination reports failure")
 	travel = _quiet(factory)
 	travel.units[0].pos = Vector2(18.5, 44.5); travel.units[1].pos = Vector2(22.5, 44.5)
 	travel.submit([1], "move", {"position": Vector2(24.5, 44.5)})
@@ -121,9 +124,9 @@ func run(factory: Callable) -> Array[String]:
 	w.units[0].pos = Vector2(20.5, 35.5); w.units[1].pos = mortar.crew_points[1]
 	w.submit([1, 2], "operate", {"target_id": mortar.id}); _ticks(w, 500)
 	_check(mortar.crew.size() == 2 and mortar.crew[0] == 2, "First actual arrival becomes gunner")
-	_check(w.units[1].pos.distance_to(mortar.crew_points[0]) < 0.05 and w.units[0].pos.distance_to(mortar.crew_points[1]) < 0.05, "Arrival reorders role positions without overlapping operators: " + str([w.units[0].pos, w.units[0].stage, w.units[0].goal, w.units[0].path_index, w.units[0].path, w.units[1].pos, w.units[1].stage, w.units[1].goal]))
+	_check(w.units[1].pos.distance_to(mortar.crew_points[1]) < 0.05 and w.units[0].pos.distance_to(mortar.crew_points[0]) < 0.05, "First-arrival role order preserves each operator's physical seat")
 	w.units[1].hp = 20.0; w.unit_system.finalize(w); _ticks(w, 120)
-	_check(w.units[0].stage == "station" and w.units[0].pos.distance_to(mortar.crew_points[0]) < 0.05, "Promoted loader reaches the vacated gunner point")
+	_check(w.units[0].stage == "station" and w.units[0].pos.distance_to(mortar.crew_points[0]) < 0.05 and mortar.crew == [1], "Promoted loader operates from its own seat without standing on the downed former gunner")
 	w = _quiet(factory)
 	var u: Dictionary = w.units[0]
 	u.hp = 25.0; w.unit_system.finalize(w); _check(u.conscious, "HP exactly 25 is conscious")
@@ -142,7 +145,7 @@ func run(factory: Callable) -> Array[String]:
 	_ticks(w, 601)
 	_check(w.submit([1], "draft", {"value": true}).ok, "Draft is available when ten-second cooldown expires")
 	w = _quiet(factory)
-	w.units[0].pos = Vector2(39.0, 40.5); w.units[1].pos = Vector2(39.5, 40.5)
+	w.units[0].pos = Vector2(38.5, 40.5); w.units[1].pos = Vector2(39.5, 40.5)
 	w.units[1].hp = 20.0; w.units[1].conscious = false; w.units[1].bleed_rate = 0.1
 	_check(w.submit([1], "treat", {"target_id": 2}).ok, "Field treatment accepted")
 	_ticks(w, 380)
@@ -165,7 +168,188 @@ func run(factory: Callable) -> Array[String]:
 	_check(enemy.job != "rout" and enemy.rout_until <= w.time_s, "Enemy AI resumes after suppression cooldown")
 	_test_enemy_contract(factory)
 	_test_logistics_medical_contract(factory)
+	_test_grid_occupancy(factory)
+	_test_grid_medical_and_commands(factory)
+	_test_auto_posture_recovery(factory)
 	return failures
+
+func _test_auto_posture_recovery(factory: Callable) -> void:
+	var w = _grid_world(factory, [Vector2(5.5, 5.5)])
+	var u: Dictionary = w.units[0]
+	u.suppression = 60.0; u.last_threat = w.time_s; w.unit_system.finalize(w)
+	_check(u.forced_prone and u.posture == 2, "Automatic posture respects forced-prone pressure")
+	u.suppression = 39.0; w.time_s = 1.4; w.unit_system.finalize(w)
+	_check(u.forced_prone and u.posture == 2, "Automatic recovery keeps the full forced minimum")
+	w.time_s = 1.5; w.unit_system.finalize(w)
+	_check(not u.forced_prone and u.posture == 0 and absf(float(u.posture_timer) - 0.7) < 0.00001, "Automatic pressure release returns to standing with the real transition timer")
+	u.posture_mode = 1; u.suppression = 60.0; w.unit_system.finalize(w)
+	u.suppression = 39.0; w.time_s += 1.5; w.unit_system.finalize(w)
+	_check(not u.forced_prone and u.posture == 1, "Manual crouch is restored instead of automatic standing")
+	u.posture_mode = -1; u.posture = 2; u.conscious = false; u.hp = 35.1; w.unit_system.finalize(w)
+	_check(u.conscious and u.posture == 0 and float(u.posture_timer) > 0.69, "Automatic wake-up restores standing and preserves transition timing")
+	u.posture_mode = 2; u.posture = 2; u.conscious = false; u.hp = 35.1; w.unit_system.finalize(w)
+	_check(u.conscious and u.posture == 2, "Manual prone remains locked after waking")
+
+func _grid_world(factory: Callable, positions: Array):
+	var w = factory.call()
+	w.units.clear(); w.buildings.clear(); w.supplies.clear(); w.events.clear(); w.pending_orders.clear()
+	w.buildings.append(State.building(1000, "core", Rect2i(60, 44, 2, 2)))
+	for point in positions: w.units.append(State.unit(w.units.size() + 1, 0, point))
+	w.unit_system.setup(w); w.next_wave = 3; w.start_battle()
+	return w
+
+func _grid_safe(w, context: String) -> bool:
+	var cells: Dictionary = {}
+	var moving: Array = []
+	for u in w.units:
+		if u.dead or not u.conscious or int(u.carrier_id) >= 0: continue
+		var cell := Vector2i(Vector2(u.pos).floor())
+		if cells.has(cell): _check(false, context + " active units share a cell: " + str([cells[cell], u.id, cell, w.step_index])); return false
+		cells[cell] = int(u.id)
+		if u.path.is_empty() and not bool(u.move_active):
+			if Vector2(u.pos).distance_to(Vector2(cell) + Vector2(0.5, 0.5)) > 0.00001: _check(false, context + " final unit position is not a cell center"); return false
+			for body in w.units:
+				if int(body.id) != int(u.id) and int(body.carrier_id) < 0 and (body.dead or not body.conscious) and Vector2i(Vector2(body.pos).floor()) == cell:
+					_check(false, context + " final active destination overlaps a body"); return false
+		if Vector2(u.prev_pos).distance_to(Vector2(u.pos)) > 0.000001: moving.append(u)
+	for i in range(moving.size()):
+		for j in range(i + 1, moving.size()):
+			if Geometry2D.segment_intersects_segment(moving[i].prev_pos, moving[i].pos, moving[j].prev_pos, moving[j].pos) != null:
+				_check(false, context + " simultaneous trajectories cross: " + str([moving[i].id, moving[j].id, w.step_index])); return false
+	return true
+
+func _safe_ticks(w, count: int, context: String) -> bool:
+	for i in range(count):
+		w.step()
+		if not _grid_safe(w, context): return false
+	return true
+
+func _test_grid_occupancy(factory: Callable) -> void:
+	var w = _grid_world(factory, [Vector2(4.5, 8.5), Vector2(5.5, 8.5), Vector2(6.5, 8.5), Vector2(7.5, 8.5), Vector2(8.5, 8.5), Vector2(9.5, 8.5)])
+	w.set_paused(true)
+	_check(w.submit([1, 2, 3, 4, 5], "move", {"position": Vector2(12.2, 12.9)}).ok, "Paused same-point group movement allocates cells")
+	_check(w.submit([6], "move", {"position": Vector2(12.2, 12.9)}).ok, "Later paused movement can choose another free destination")
+	var endpoints: Dictionary = {}
+	for order in w.pending_orders:
+		for alloc in order.data._allocations.values():
+			var goal: Vector2 = alloc.goal; var cell := Vector2i(goal.floor())
+			_check(not endpoints.has(cell) and goal == Vector2(cell) + Vector2(0.5, 0.5), "Paused projected endpoints are distinct exact cell centers")
+			endpoints[cell] = true
+	w.set_paused(false); _safe_ticks(w, 900, "same-point group")
+	for u in w.units: _check(u.job == "idle" and u.pos == u.goal, "Every grouped unit reaches its distinct cell without a permanent queue")
+	# A sealed one-cell corridor has one side pocket and no route around its walls.
+	w = _grid_world(factory, [Vector2(5.5, 10.5), Vector2(13.5, 10.5)])
+	for x in range(64):
+		w.buildings.append(State.building(1100 + x, "wall", Rect2i(x, 9, 1, 1)))
+		if x != 9: w.buildings.append(State.building(1200 + x, "wall", Rect2i(x, 11, 1, 1)))
+		w.buildings.append(State.building(1300 + x, "wall", Rect2i(x, 12, 1, 1)))
+	w.unit_system.rebuild_navigation(w)
+	_check(w.submit([1], "move", {"position": Vector2(14.5, 10.5)}).ok and w.submit([2], "move", {"position": Vector2(4.5, 10.5)}).ok, "Narrow corridor accepts opposite travel intents")
+	_safe_ticks(w, 1200, "one-cell corridor")
+	_check(w.units[0].pos == Vector2(14.5, 10.5) and w.units[1].pos == Vector2(4.5, 10.5), "Both opposite corridor movers reach their original goals through a real side pocket")
+	var yielded := false
+	for event in w.events:
+		if event.type == "unit_traffic_yield": yielded = true
+	_check(yielded, "Narrow-corridor deadlock is resolved by a recorded physical yield")
+	w = _grid_world(factory, [Vector2(5.5, 5.5), Vector2(6.5, 5.5)])
+	w.submit([1], "move", {"position": Vector2(6.5, 6.5)}); w.submit([2], "move", {"position": Vector2(5.5, 6.5)})
+	_safe_ticks(w, 240, "crossing diagonals")
+	_check(w.units[0].pos == Vector2(6.5, 6.5) and w.units[1].pos == Vector2(5.5, 6.5), "Crossing diagonal requests serialize safely and both complete")
+	w = _grid_world(factory, [Vector2(5.5, 5.5), Vector2(8.5, 5.5), Vector2(9.5, 5.5)])
+	w.units[1].conscious = false; w.units[1].hp = 20.0
+	w.units[2].dead = true; w.units[2].conscious = false; w.units[2].hp = 0.0
+	w.submit([1], "move", {"position": Vector2(12.5, 5.5)})
+	_safe_ticks(w, 240, "body transit")
+	_check(w.units[0].pos == Vector2(12.5, 5.5), "Unconscious and dead bodies do not block a through route")
+	w.submit([1], "move", {"position": Vector2(8.5, 5.5)}); w.step()
+	_check(Vector2i(Vector2(w.units[0].goal).floor()) != Vector2i(8, 5), "Group endpoint allocation never lands on an unconscious body")
+	w = _grid_world(factory, [Vector2(5.5, 5.5)])
+	w.submit([1], "move", {"position": Vector2(9.5, 5.5)}); _ticks(w, 7)
+	_check(w.units[0].move_active and w.units[0].pos != Vector2(5.5, 5.5), "A grid transition uses continuous positions")
+	w.submit([1], "stop"); _safe_ticks(w, 40, "mid-edge stop")
+	_check(w.units[0].job == "idle" and w.units[0].pos == Vector2(6.5, 5.5), "Stop finishes only the already reserved edge at its center")
+	w.reset()
+	_check(w.unit_system.reserved_edges.is_empty(), "Reset clears in-flight and crossed-edge reservations")
+	for unit in w.units: _check(not unit.move_active and not unit.traffic_yield, "Reset clears per-unit motion and yield state")
+	var casualty: Dictionary = w.units[0]
+	var old_cell := Vector2i(Vector2(casualty.pos).floor())
+	casualty.hp = 20.0; w.unit_system.finalize(w)
+	_check(w.unit_system.occupied_by(old_cell) == -1 and not w.unit_system.reserved_cells.has(old_cell), "Same-step collapse immediately releases public active occupancy and next-cell claims")
+
+func _test_grid_medical_and_commands(factory: Callable) -> void:
+	var w = _grid_world(factory, [Vector2(38.5, 40.5), Vector2(39.5, 40.5), Vector2(37.5, 40.5)])
+	var patient: Dictionary = w.units[1]
+	patient.hp = 20.0; patient.conscious = false; patient.bleed_rate = 0.1
+	_check(w.submit([1], "rescue", {"target_id": 2}).ok, "Centered rescue gets both a bed and a separate medic approach")
+	_safe_ticks(w, 900, "rescue placement")
+	_check(int(patient.carrier_id) == -1 and patient.bleed_rate == 0.0 and w.units[0].job == "idle", "Centered rescue completes placement and treatment")
+	_check(Vector2i(Vector2(patient.pos).floor()) != Vector2i(Vector2(w.units[0].pos).floor()) and patient.pos.distance_to(w.units[0].pos) <= 1.01, "Placed patient and medic finish in neighboring separate cells")
+	var stages: Dictionary = {}
+	for event in w.events:
+		if event.type == "unit_action_stage" and int(event.unit_id) == 1: stages[String(event.stage)] = true
+	for stage in ["approach_patient", "pickup_patient", "carry_patient", "drop_patient", "treatment"]: _check(stages.has(stage), "Rescue publishes real action phase " + stage)
+	# A passerby stands over a body only while in transit. Waking must claim a free cell.
+	w = _grid_world(factory, [Vector2(5.5, 5.5), Vector2(5.5, 5.5)])
+	patient = w.units[1]; patient.conscious = false; patient.hp = 35.1
+	w.units[0].pos = Vector2(5.5, 5.5); patient.pos = Vector2(5.5, 5.5)
+	w.unit_system.finalize(w)
+	_check(patient.conscious and patient.pos != w.units[0].pos and Vector2(patient.pos) - Vector2(patient.pos).floor() == Vector2(0.5, 0.5), "Wake-up reacquires a legal free center when the old square is occupied")
+	_grid_safe(w, "wake-up")
+	var gun: Dictionary = State.building(1022, "mg", Rect2i(20, 22, 1, 1))
+	w.buildings.append(gun); w.unit_system.rebuild_navigation(w)
+	w.units[0].pos = gun.crew_points[0]
+	w.submit([1], "operate", {"target_id": gun.id}); w.step()
+	_check(not w.submit([1], "attack", {"target_id": w.core().id}).ok and w.units[0].station_id == gun.id and gun.target_id == -1, "Personal attack cannot release or redirect an occupied station")
+	w.units[1].drafted = true
+	_check(w.submit([2], "move", {"position": gun.crew_points[0]}).ok, "Moving near an occupied station can allocate a neighboring free cell")
+	if not w.pending_orders.is_empty():
+		var goal: Vector2 = w.pending_orders[-1].data._allocations[2].goal
+		_check(Vector2i(goal.floor()) != Vector2i(Vector2(gun.crew_points[0]).floor()), "A move near an occupied station receives another cell")
+	# Ignore downed defenders and find a living defender even when that one is farther.
+	w = _grid_world(factory, [Vector2(9.5, 5.5), Vector2(20.5, 5.5)])
+	w.units[0].conscious = false; w.units[0].hp = 20.0
+	var enemy: Dictionary = State.unit(100, 1, Vector2(5.5, 5.5))
+	w.units.append(enemy); w.unit_system._ensure_unit(enemy); w.unit_system._enemy_ai(w, enemy)
+	_check(enemy.target_id == 2, "Enemy chooses farther living defender instead of finishing a downed nearby defender")
+	w.units[1].conscious = false; w.units[1].hp = 20.0; w.unit_system._enemy_ai(w, enemy)
+	_check(enemy.target_id < 0 and not enemy.path.is_empty() and enemy.goal.x > enemy.pos.x, "Only downed defenders makes enemy search or advance toward the core")
+	# Personal fire orders remain in place through temporary range and wall issues.
+	w = _grid_world(factory, [Vector2(5.5, 5.5)])
+	enemy = State.unit(100, 1, Vector2(40.5, 5.5)); enemy.job = "treat"; w.units.append(enemy); w.unit_system._ensure_unit(enemy); enemy.ai_next = INF
+	_check(w.submit([1], "attack", {"target_id": enemy.id}).ok, "A living out-of-range forced target is a valid hold-position intent")
+	_safe_ticks(w, 120, "forced personal target")
+	_check(w.units[0].pos == Vector2(5.5, 5.5) and w.units[0].target_id == enemy.id and w.stats.rifle_shots == 0, "Out-of-range personal target waits without chasing or falling back")
+	enemy.pos = Vector2(9.5, 5.5); enemy.prev_pos = enemy.pos; enemy.conscious = false; enemy.hp = 20.0
+	_check(w.submit([1], "attack", {"target_id": enemy.id}).ok, "Player can explicitly target a living downed enemy")
+	# The northern muzzle can reach into an adjacent wall: ranged AI must choose
+	# another real firing cell while empty rifles still use the adjacent melee cell.
+	w = _grid_world(factory, [Vector2(55.5, 40.5)])
+	w.buildings.append(State.building(1010, "wall", Rect2i(5, 5, 1, 1)))
+	w.unit_system.rebuild_navigation(w)
+	enemy = State.unit(100, 1, Vector2(5.5, 6.5)); w.units.append(enemy); w.unit_system._ensure_unit(enemy)
+	var wall: Dictionary = w.entity(1010)
+	var near_pose: Dictionary = Pose.aimed_rifle(enemy.pos, wall.pos, 0)
+	_check(not w.combat_system._muzzle_clear(w, enemy.pos, near_pose.muzzle), "Northern adjacent wall fixture actually obstructs the rendered muzzle")
+	var point: Vector2 = w.unit_system._structure_fire_position(w, enemy, wall)
+	var copy := enemy.duplicate(); copy.pos = point
+	_check(point != enemy.pos and point.x >= 0 and w.unit_system._standing_line(w, copy, wall), "Ranged structural assault finds a reachable cell with a clear actual muzzle")
+	# A ground bombardment replaces the unit-tracking station intent completely.
+	w = _quiet(factory)
+	var mortar: Dictionary = w.stations()[2]
+	w.units[0].pos = mortar.crew_points[0]; mortar.loaded = 1; mortar.ammo = 3
+	w.submit([1], "operate", {"target_id": mortar.id}); w.step()
+	enemy = State.unit(100, 1, Vector2(32.5, 10.5)); enemy.job = "treat"; w.units.append(enemy); w.unit_system._ensure_unit(enemy); enemy.ai_next = INF
+	_check(w.submit_station_attack(int(mortar.id), int(enemy.id)).ok, "Mortar accepts unit-target tracking before ground replacement")
+	_ticks(w, 60)
+	_check(int(mortar.target_id) == int(enemy.id) and float(mortar.aim_progress) > 0.9, "Unit-target mortar has real partially completed aim")
+	var ground := Vector2(45.5, 15.5)
+	_check(w.submit([1], "fire", {"target_id": mortar.id, "position": ground}).ok, "Ground bombardment can replace a unit-target command")
+	w.step()
+	_check(int(mortar.target_id) == -1 and int(mortar.aim_target_id) == -1 and mortar.fire_point == ground and float(mortar.aim_progress) < 0.04, "Ground replacement clears tracking and restarts aim without consuming the chamber")
+	enemy.pos = Vector2(12.5, 12.5); _ticks(w, 239)
+	_check(int(w.stats.mortar_shots) == 1 and mortar.fire_point == ground and int(mortar.loaded) == 0, "Replaced mortar fires exactly one shell at the ground intent")
+	var shells: Array = w.projectiles.filter(func(projectile): return projectile.kind == "mortar")
+	_check(shells.size() == 1 and int(shells[0].target_id) == -1 and Vector2(shells[0].impact).distance_to(ground) <= 2.5, "Actual shell keeps the replacement ground destination rather than following the old unit")
 
 func _isolated_enemy(factory: Callable, position: Vector2, kind: String = "rifleman"):
 	var w = _quiet(factory)
@@ -203,10 +387,11 @@ func _test_enemy_contract(factory: Callable) -> void:
 	_check(enemy.goal == held_goal and enemy.ai_hold_until == 2.0, "Enemy keeps a selected firing position for two seconds")
 	w = _isolated_enemy(factory, Vector2(0.6, 18.6), "flanker"); enemy = w.units[-1]
 	w.unit_system._enemy_ai(w, enemy)
-	_check(enemy.goal.y >= 35.5 and enemy.goal.distance_to(Vector2(10.5, 31.5)) > 1.0, "Flanker without a visible target follows a reachable core approach rather than a fixed flank waypoint")
+	var firing_copy := enemy.duplicate(); firing_copy.pos = enemy.goal
+	_check(w.unit_system._structure_distance(enemy.goal, w.core()) < 4.3 and w.unit_system._reachable(enemy.pos, enemy.goal) and w.unit_system._standing_line(w, firing_copy, w.core()) and enemy.goal.distance_to(Vector2(10.5, 31.5)) > 1.0, "Flanker without a visible target follows a reachable core firing position with a clear real muzzle")
 	# The same viable point has exactly the contracted flanker arc bonus.
-	w = _isolated_enemy(factory, Vector2(8.5, 25.5), "flanker"); enemy = w.units[-1]
-	w.units[0].pos = Vector2(8.5, 30.5)
+	w = _isolated_enemy(factory, Vector2(8.5, 40.5), "flanker"); enemy = w.units[-1]
+	w.units[0].pos = Vector2(8.5, 44.5)
 	var outside_score: float = w.unit_system._cover_score(w, enemy, w.units[0], enemy.pos)
 	for station in w.stations():
 		if station.kind == "mg": station.facing = (enemy.pos - station.pos).angle()
@@ -252,13 +437,13 @@ func _test_logistics_medical_contract(factory: Callable) -> void:
 	w.submit([1], "operate", {"target_id": mg.id}); _ticks(w, 120)
 	_check(w.units[0].stage == "station" and mg.crew.has(1) and w.units[0].status.contains("缺") and w.units[0].loaded == 30, "No supply retains the empty post and never silently switches to the operator rifle")
 	w = _quiet(factory)
-	w.units[0].pos = Vector2(39.0, 40.5); w.units[0].bandages = 0
+	w.units[0].pos = Vector2(38.5, 40.5); w.units[0].bandages = 0
 	w.units[1].pos = Vector2(39.5, 40.5); w.units[1].hp = 20.0; w.units[1].conscious = false; w.units[1].bleed_rate = 0.1
 	w.submit([1], "rescue", {"target_id": 2}); _ticks(w, 900)
 	_check(w.units[0].job == "idle" and w.units[1].carrier_id == -1 and w.units[1].bleed_rate == 0.0 and w.medical_stock == 11 and w.medical_reservations.is_empty(), "Complete rescue transports, places and treats with one hospital medicine, releasing reservations")
 	_check(not w.units[1].conscious and w.units[1].hp < 20.0, "Rescue and treatment do not bypass the long natural recovery rule")
 	w = _quiet(factory)
-	w.units[0].pos = Vector2(39.0, 40.5); w.units[0].bandages = 0; w.medical_stock = 0
+	w.units[0].pos = Vector2(38.5, 40.5); w.units[0].bandages = 0; w.medical_stock = 0
 	w.units[1].pos = Vector2(39.5, 40.5); w.units[1].hp = 20.0; w.units[1].conscious = false; w.units[1].bleed_rate = 0.1
 	w.submit([1], "rescue", {"target_id": 2}); _ticks(w, 400)
 	_check(w.units[0].job == "idle" and w.units[1].carrier_id == -1 and w.units[1].bleed_rate == 0.1 and w.units[0].status.contains("缺药"), "Rescue without medicine still places the casualty but reports continued bleeding")

@@ -42,11 +42,21 @@ func _run() -> void:
 		var last_serial := 0; var max_projectiles := 0; var ally_hits := 0; var ally_damage := 0.0
 		var flank_hits := 0; var flank_damage := 0.0; var manual_supplies := 0; var deliveries := 0
 		var empty_seconds := 0.0; var away_seconds := 0.0
+		var occupancy_violations := 0
+		var occupancy_examples: Array[Dictionary] = []
 		var snapshots: Array[Dictionary] = []
 		var damage_events: Array[Dictionary] = []
 		while w.phase == "running" and w.step_index < 28801:
 			if w.step_index % 15 == 0: _command(w, profile)
 			w.step()
+			var occupied: Dictionary = {}
+			for unit in w.units:
+				if unit.dead or not unit.conscious or unit.hp <= 0 or unit.carrier_id >= 0: continue
+				var cell := Vector2i(Vector2(unit.pos).floor())
+				if occupied.has(cell):
+					occupancy_violations += 1
+					if occupancy_examples.size() < 8: occupancy_examples.append({"step": w.step_index, "cell": [cell.x, cell.y], "units": [occupied[cell], unit.id]})
+				occupied[cell] = unit.id
 			for station in w.stations():
 				if station.kind != "mg" or station.destroyed: continue
 				if station.loaded <= 0 and station.ammo <= 0 and station.reload_reserved <= 0: empty_seconds += Config.FIXED_DT
@@ -68,7 +78,7 @@ func _run() -> void:
 		for order in operations:
 			if order.kind == "resupply": manual_supplies += 1
 		var result := _snapshot(w)
-		result.merge({"profile": profile, "seed": Config.SEED, "ai_contract": "strict_priority_dynamic_cover_melee_v2", "reason": w.result_reason, "max_projectiles": max_projectiles, "wall_ms": Time.get_ticks_msec() - started, "accepted_commands": operations.size(), "rejected_commands": rejected, "manual_supply_commands": manual_supplies, "supply_deliveries": deliveries, "mg_empty_station_seconds": snappedf(empty_seconds, 0.01), "mg_internal_supply_operator_seconds": snappedf(away_seconds, 0.01), "ally_friendly_fire_hits": ally_hits, "ally_friendly_fire_hp": ally_damage, "flanker_hits_on_defenders": flank_hits, "flanker_damage_on_defenders": flank_damage, "checkpoints": snapshots, "operations": operations.duplicate(true), "defender_damage_events": damage_events})
+		result.merge({"profile": profile, "seed": Config.SEED, "ai_contract": "demo_v0.2_grid_path_cover_aim_cycles", "reason": w.result_reason, "max_projectiles": max_projectiles, "wall_ms": Time.get_ticks_msec() - started, "accepted_commands": operations.size(), "rejected_commands": rejected, "occupancy_violations": occupancy_violations, "occupancy_examples": occupancy_examples, "manual_supply_commands": manual_supplies, "supply_deliveries": deliveries, "mg_empty_station_seconds": snappedf(empty_seconds, 0.01), "mg_internal_supply_operator_seconds": snappedf(away_seconds, 0.01), "ally_friendly_fire_hits": ally_hits, "ally_friendly_fire_hp": ally_damage, "flanker_hits_on_defenders": flank_hits, "flanker_damage_on_defenders": flank_damage, "checkpoints": snapshots, "operations": operations.duplicate(true), "defender_damage_events": damage_events})
 		summaries.append(result)
 		var brief := result.duplicate(); brief.erase("operations"); brief.erase("defender_damage_events")
 		print("PROFILE_RESULT ", JSON.stringify(brief))
@@ -84,14 +94,14 @@ func _prepare(w, profile: String) -> void:
 	_send(w, [1, 2, 3, 4, 5, 6], "posture", {"value": 1})
 	_send(w, [1, 2, 3, 4, 5, 6], "style", {"value": 1})
 	if profile == "rifles":
-		guard_points = {1: Vector2(16.5, 21.5), 2: Vector2(20.5, 25.5), 3: Vector2(38.5, 21.5), 4: Vector2(44.5, 24.5), 5: Vector2(8.5, 25.5), 6: Vector2(10.5, 27.5)}
+		guard_points = {1: Vector2(16.5, 22.5), 2: Vector2(20.5, 25.5), 3: Vector2(38.5, 22.5), 4: Vector2(44.5, 24.5), 5: Vector2(8.5, 25.5), 6: Vector2(10.5, 27.5)}
 	else:
 		roles = {1: 0, 2: 1}
 		_send(w, [1, 2], "style", {"value": 0})
 		if profile != "dual_mg": roles.merge({3: 2, 4: 2})
-		else: guard_points.merge({3: Vector2(16.5, 21.5), 4: Vector2(39.5, 21.5)})
+		else: guard_points.merge({3: Vector2(16.5, 22.5), 4: Vector2(39.5, 22.5)})
 		guard_points.merge({5: Vector2(8.5, 25.5), 6: Vector2(10.5, 27.5)})
-	if profile == "neglect_flank": guard_points.merge({5: Vector2(38.5, 21.5), 6: Vector2(44.5, 24.5)}, true)
+	if profile == "neglect_flank": guard_points.merge({5: Vector2(38.5, 22.5), 6: Vector2(44.5, 24.5)}, true)
 	for id in roles: _send(w, [id], "operate", {"target_id": w.stations()[int(roles[id])].id})
 	for id in guard_points: _send(w, [id], "move", {"position": guard_points[id]})
 	_send(w, [5, 6], "style", {"value": 0})
@@ -126,10 +136,10 @@ func _command(w, profile: String) -> void:
 		if profile != "rifles" and profile != "neglect_supply" and not active and _try_supply(w, id, claimed): continue
 		if u.job == "idle": _return(w, id)
 	if profile != "neglect_flank" and w.time_s >= 36.0 and not prepared.has("right_guard"):
-		prepared.right_guard = true; guard_points[6] = Vector2(38.5, 21.5)
+		prepared.right_guard = true; guard_points[6] = Vector2(38.5, 22.5)
 		if not w.entity(6).job in ["resupply", "rescue", "treat"]: _return(w, 6)
 	if profile != "neglect_flank" and w.time_s >= 72.0 and not prepared.has("left_guard"):
-		prepared.left_guard = true; guard_points[5] = Vector2(16.5, 21.5)
+		prepared.left_guard = true; guard_points[5] = Vector2(16.5, 22.5)
 		if not w.entity(5).job in ["resupply", "rescue", "treat"]: _return(w, 5)
 	if profile not in ["rifles", "dual_mg"]: _mortar(w)
 

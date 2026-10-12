@@ -2,6 +2,7 @@ extends RefCounted
 
 const State = preload("res://scripts/sim/state.gd")
 const Config = preload("res://scripts/sim/battle_config.gd")
+const Pose = preload("res://scripts/sim/weapon_pose.gd")
 const DT := 1.0 / 60.0
 
 var failures: Array[String] = []
@@ -25,6 +26,9 @@ func run(world_factory: Callable) -> Array[String]:
 	_destroyed_station_ammunition(world_factory)
 	_weapon_rules(world_factory)
 	_machine_gun_preference(world_factory)
+	_unified_cover_boundaries(world_factory)
+	_weapon_cycles_and_muzzles(world_factory)
+	_mortar_unit_target(world_factory)
 	_terminal_trails(world_factory)
 	_cross_module_orders(world_factory)
 	_spatial_equivalence(world_factory)
@@ -72,8 +76,8 @@ func _probability_ranges(factory: Callable) -> void:
 	var multi: float = _sample_arrivals(factory, 0.5, true)
 	_close(bare, 0.60, "20,000 real projectiles without cover", 0.015)
 	_close(half, 0.30, "20,000 real projectiles with independent P=.6/C=.5", 0.015)
-	_close(capped, 0.09, "20,000 real projectiles with C capped at .85", 0.015)
-	_close(multi, 0.30, "20,000 projectiles through multi-cell and adjacent cover", 0.015)
+	_close(capped, 0.06, "20,000 real projectiles with C approaching .90", 0.015)
+	_close(multi, 0.15, "20,000 projectiles through two independent covers, multi-cell once", 0.015)
 	print("COMBAT_RANGE samples=80000 bare=%.4f P.6_C.5=%.4f cap=%.4f multi=%.4f" % [bare, half, capped, multi])
 
 
@@ -86,11 +90,13 @@ func _sample_arrivals(factory: Callable, screen: float, multi: bool) -> float:
 	if screen >= 0.0:
 		var cover: Dictionary = State.building(1000, "sandbag", Rect2i(6, 4, 2, 2) if multi else Rect2i(7, 5, 1, 1))
 		cover.screen_volume = screen
+		cover.screening_strength = screen / (0.9 - screen) if screen < 0.9 else 1000000.0
 		cover.hp = 10000000.0
 		world.buildings.append(cover)
 		if multi:
 			var farther: Dictionary = State.building(1001, "sandbag", Rect2i(5, 5, 1, 1))
-			farther.screen_volume = 0.85
+			farther.screen_volume = 0.5
+			farther.screening_strength = 1.25
 			farther.hp = 10000000.0
 			world.buildings.append(farther)
 	var weapon: Dictionary = _fast_rifle()
@@ -113,25 +119,25 @@ func _probability_formula(factory: Callable) -> void:
 	var target: Dictionary = State.unit(100, 1, Vector2.ZERO)
 	var rifle: Dictionary = Config.rifle()
 	shooter.stability = 1.0
-	_close(world.combat_system.hit_probability(shooter, target, rifle), 0.8, "default rifle near accuracy")
+	_close(world.combat_system.hit_probability(shooter, target, rifle), 0.6, "default rifle near accuracy")
 	target.pos = Vector2(24.0, 0.0)
-	_close(world.combat_system.hit_probability(shooter, target, rifle), 0.35, "default rifle range-end accuracy")
+	_close(world.combat_system.hit_probability(shooter, target, rifle), 0.2, "default rifle range-end accuracy")
 	target.pos = Vector2(12.0, 0.0)
-	_close(world.combat_system.hit_probability(shooter, target, rifle), 0.575, "default rifle distance interpolation")
+	_close(world.combat_system.hit_probability(shooter, target, rifle), 0.4, "default rifle distance interpolation")
 	shooter.stability = 0.4
 	shooter.suppression = 50.0
 	shooter.hp = 60.0
 	shooter.style = 2
 	target.posture = 1
 	# Independently calculated from the contract's literal weapon and body values.
-	_close(world.combat_system.hit_probability(shooter, target, rifle), 0.575 * 0.55 * 0.65 * 0.8 * 0.85 * 1.15, "crouch, stability, suppression, injury and cautious style multiply once")
+	_close(world.combat_system.hit_probability(shooter, target, rifle), 0.4 * 0.55 * 0.65 * 0.8 * 0.85 * 1.25, "crouch, stability, suppression, injury and cautious style multiply once")
 	shooter.stability = 0.8
 	shooter.suppression = 25.0
 	shooter.hp = 40.0
 	shooter.style = 0
 	target.pos = Vector2(6.0, 0.0)
 	target.posture = 2
-	var expected: float = 0.6875 * 0.85 * 0.35 * 0.9 * 0.65 * 0.75
+	var expected: float = 0.5 * 0.85 * 0.35 * 0.9 * 0.65 * 0.65
 	_close(world.combat_system.hit_probability(shooter, target, rifle), expected, "critical injury and prone silhouette use distinct factors")
 	var projectile: Dictionary = world.combat_system.spawn_direct_projectile(world, shooter, target, rifle)
 	_close(float(projectile.probability), expected, "real projectile uses the default formula without injection")
@@ -148,7 +154,7 @@ func _probability_formula(factory: Callable) -> void:
 	# The gunner is 20 cells away; the actual MG muzzle is only 16 cells away.
 	shooter.pos = Vector2(-4.0, 0.0)
 	projectile = world.combat_system.spawn_direct_projectile(world, shooter, structure, Config.machine_gun(), -1.0, Vector2.ZERO)
-	_close(float(projectile.probability), 0.5, "default MG formula measures muzzle range and full building volume")
+	_close(float(projectile.probability), 0.355, "default MG formula measures muzzle range and full building volume")
 
 
 func _cover_geometry(factory: Callable) -> void:
@@ -159,21 +165,27 @@ func _cover_geometry(factory: Callable) -> void:
 	world.units.append(target)
 	var near: Dictionary = State.building(1000, "crate", Rect2i(6, 4, 2, 2))
 	var far: Dictionary = State.building(1001, "sandbag", Rect2i(5, 5, 1, 1))
+	near.screening_strength = 2.0
+	far.screening_strength = 2.0
 	world.buildings.append(near)
 	world.buildings.append(far)
 	var cover: Dictionary = world.cover_for(target, shooter.pos)
-	_check(int(cover.building_id) == 1000 and Vector2i(cover.cell) == Vector2i(7, 5), "2x2 cover chooses the nearest incoming cell")
-	_close(float(cover.chance), 0.55, "multi-cell cover volume is not summed")
-	_check(not bool(cover.blocked), "standing can shoot over crate")
+	_check(int(cover.building_id) == 1001 and Vector2i(cover.cell) == Vector2i(5, 5), "path preview starts at first incoming building")
+	_check(cover.obstacles.size() == 2 and Vector2i(cover.obstacles[1].cell) == Vector2i(7, 5), "2x2 samples only the closest target-side cell")
+	_close(float(cover.chance), 0.84, "two independent .6 obstacles aggregate to .84")
+	_check(not bool(cover.blocked), "cover is not a wall")
 	target.posture = 1
-	_check(not bool(world.cover_for(target, shooter.pos).blocked), "crate at exact .75 crouch height is not a relative wall")
+	_check(not bool(world.cover_for(target, shooter.pos).blocked), "crouching never changes a building category")
 	target.posture = 0
-	var side: Dictionary = world.cover_for(target, Vector2(8.5, 0.5))
-	_close(float(side.chance), 0.0, "side fire receives no frontal cover")
+	_close(float(world.cover_for(target, Vector2(8.5, 0.5)).chance), 0.0, "side fire receives no frontal cover")
 	target.posture = 2
-	_check(bool(world.cover_for(target, shooter.pos).blocked), "prone sandbag/crate is a relative wall")
-	_check(not world.combat_system.has_line_of_fire(world, shooter, target), "relative wall rejects direct aim")
+	var prone_chance: float = 0.9 * 2.0 / 2.35
+	_close(float(world.cover_for(target, shooter.pos).chance), 1.0 - pow(1.0 - prone_chance, 2), "prone volume increases both path interception probabilities")
+	_check(not bool(world.cover_for(target, shooter.pos).blocked), "prone cover remains probabilistic")
+	_check(world.combat_system.has_line_of_fire(world, shooter, target), "prone behind cover remains a legal direct target")
 	target.posture = 0
+	target.pos = Vector2(15.5, 5.5)
+	_close(float(world.cover_for(target, shooter.pos).chance), 0.84, "target distance does not change path cover")
 	shooter.stability = 1.0
 	var weapon: Dictionary = Config.rifle()
 	weapon.accuracy_near = 2.0
@@ -183,9 +195,11 @@ func _cover_geometry(factory: Callable) -> void:
 	weapon.accuracy_far = 0.0
 	_close(world.combat_system.hit_probability(shooter, target, weapon), 0.02, "P lower clamp")
 	near.hp = 1.0
-	_close(float(world.cover_for(target, shooter.pos).chance), 0.55, "damaged cover preserves interception")
+	_close(float(world.cover_for(target, shooter.pos).chance), 0.84, "damaged cover preserves interception")
 	near.hp = 0.0
-	_close(float(world.cover_for(target, shooter.pos).chance), 0.0, "destroyed cover stops protecting immediately")
+	_close(float(world.cover_for(target, shooter.pos).chance), 0.6, "destroyed cover leaves other path cover active")
+	far.hp = 0.0
+	_close(float(world.cover_for(target, shooter.pos).chance), 0.0, "all destroyed cover stops protecting immediately")
 
 
 func _sweeps_and_friendly_fire(factory: Callable) -> void:
@@ -209,11 +223,11 @@ func _sweeps_and_friendly_fire(factory: Callable) -> void:
 	world.buildings.append(low)
 	world.combat_system.spawn_direct_projectile(world, shooter, target, _fast_rifle(), 1.0)
 	world.combat_system.advance_projectiles(world, DT)
-	_close(float(target.hp), 82.0, "distant low obstacle is transparent")
-	_close(float(low.hp), 200.0, "distant low obstacle is not damaged incidentally")
+	_close(float(target.hp), 100.0, "distant low obstacle can intercept a shot")
+	_close(float(low.hp), 195.5, "intermediate cover takes interception damage")
 	world.combat_system.spawn_direct_projectile(world, shooter, low, _fast_rifle(), 1.0)
 	world.combat_system.advance_projectiles(world, DT)
-	_close(float(low.hp), 195.5, "explicit low-building target can be damaged")
+	_close(float(low.hp), 191.0, "explicit low-building target can be damaged")
 	world.buildings.clear()
 	target.hp = 100.0
 	var friend: Dictionary = State.unit(2, 0, Vector2(5.5, 5.5))
@@ -258,22 +272,22 @@ func _target_structure_visibility(factory: Callable) -> void:
 	shooter.stability = 1.0
 	world.units.append(shooter)
 	world.buildings.append(target)
-	_check(bool(world.cover_for(shooter, target.pos).blocked), "adjacent target wall supplies a relative-wall cover result")
+	_check(bool(world.cover_for(shooter, target.pos).blocked), "adjacent target wall supplies complete path obstruction")
 	_check(world.combat_system.has_line_of_fire(world, shooter, target), "a visible adjacent target wall cannot block an attack on itself")
-	_tick(world, 1)
-	_check(int(world.stats.rifle_shots) == 1, "armed attacker actually fires at its adjacent target wall")
+	_tick(world, 40)
+	_check(int(world.stats.rifle_shots) >= 1, "armed attacker aims then fires at its adjacent target wall")
 	world.projectiles.clear()
 	var intervening: Dictionary = State.building(1001, "wall", Rect2i(32, 35, 1, 1))
 	var distant: Dictionary = State.building(1002, "wall", Rect2i(32, 36, 1, 1))
 	world.buildings.append(intervening)
 	world.buildings.append(distant)
 	_check(not world.combat_system.has_line_of_fire(world, shooter, distant), "target exception preserves obstruction by a different high wall")
-	# A distinct low obstacle can still be a relative wall for a prone attacker.
+	# A low obstacle never becomes a wall when the attacker lies down.
 	world.buildings.erase(target)
 	world.buildings.erase(intervening)
 	world.buildings.append(State.building(1003, "sandbag", Rect2i(32, 34, 1, 1)))
 	shooter.posture = 2
-	_check(not world.combat_system.has_line_of_fire(world, shooter, distant), "target exception preserves a different low relative wall")
+	_check(world.combat_system.has_line_of_fire(world, shooter, distant), "prone attacker can target a wall beyond probabilistic cover")
 	world.buildings.clear()
 	world.buildings.append(target)
 	shooter.pos = target.pos
@@ -292,11 +306,15 @@ func _armor_and_suppression(factory: Callable) -> void:
 	_close(float(heavy.hp), 145.5, "rifle against heavy armor receives quarter damage")
 	_close(float(heavy.bleed_rate), 4.5 * 0.003, "bleeding follows actual armored damage")
 	_close(float(heavy.suppression), 6.0, "heavy direct hit and near miss take half the maximum once")
+	var impact: Dictionary = world.events[-1]
+	_check(impact.type == "projectile_impact" and impact.material == "armor" and bool(impact.armor_absorbed), "nonpenetrating armor impact identifies metal feedback without removing actual damage")
 	var mg: Dictionary = Config.machine_gun()
 	mg.speed = 10000.0
 	world.combat_system.spawn_direct_projectile(world, shooter, heavy, mg, 1.0)
 	world.combat_system.advance_projectiles(world, DT)
 	_close(float(heavy.hp), 121.5, "MG penetration matches heavy armor")
+	impact = world.events[-1]
+	_check(impact.material == "unit" and not bool(impact.armor_absorbed), "penetrating impact identifies body feedback")
 	world.units.erase(heavy)
 	var near: Dictionary = State.unit(101, 1, Vector2(6.5, 6.1))
 	world.units.append(near)
@@ -623,24 +641,43 @@ func _weapon_rules(factory: Callable) -> void:
 	world.units.append(shooter)
 	world.units.append(target)
 	shooter.target_id = 100
-	shooter["combat_target_id"] = 100
-	shooter.stability = 0.5
-	target.drafted = false
+	shooter.stability = 1.0
 	target.job = "treat"
+	_tick(world, 134)
+	_check(int(world.stats.rifle_shots) == 0 and shooter.weapon_state == "aiming", "normal standing rifle performs a real 2.25 second aim")
 	_tick(world, 1)
-	_check(int(world.stats.rifle_shots) == 0, "normal standing rifle waits for stability threshold")
-	shooter.velocity = Vector2.RIGHT
-	shooter.stability = 0.15
-	_tick(world, 1)
-	_check(int(world.stats.rifle_shots) == 1, "normal moving rifle uses moving stability ceiling")
+	_check(int(world.stats.rifle_shots) == 1, "normal rifle fires when aim completes")
 	shooter.forced_prone = true
 	_tick(world, 60)
 	_check(int(world.stats.rifle_shots) == 1, "forced prone interrupts even an ongoing burst")
 	shooter.forced_prone = false
-	shooter.target_id = 9999
-	shooter.stability = 1.0
-	_tick(world, 60)
-	_check(int(world.stats.rifle_shots) == 1, "invalid explicit target does not silently retarget")
+	target.pos = Vector2(40.5, 5.5)
+	target.prev_pos = target.pos
+	_tick(world, 240)
+	_check(int(world.stats.rifle_shots) == 1 and int(shooter.target_id) == 100, "out-of-range explicit target remains locked without firing")
+	_check(shooter.weapon_state == "blocked" and shooter.status == "指定目标暂不可攻击，守位等待", "out-of-range forced target reports waiting instead of stale firing")
+	target.pos = Vector2(10.5, 5.5)
+	target.prev_pos = target.pos
+	var obstruction: Dictionary = State.building(1000, "wall", Rect2i(6, 5, 1, 1))
+	world.buildings.append(obstruction)
+	_tick(world, 1)
+	_check(int(shooter.target_id) == 100 and shooter.weapon_state == "blocked" and shooter.status == "指定目标暂不可攻击，守位等待" and int(world.stats.rifle_shots) == 1, "temporarily occluded forced target stays locked and reports waiting")
+	obstruction.destroyed = true
+	_tick(world, 1)
+	_check(shooter.weapon_state == "aiming" and String(shooter.status).begins_with("瞄准") and int(shooter.target_id) == 100, "forced target resumes actual aim after obstruction clears")
+	var moving = _empty(factory)
+	var walker: Dictionary = State.unit(1, 0, Vector2(2.5, 5.5))
+	walker.velocity = Vector2.RIGHT
+	walker.stability = 0.15
+	walker.target_id = 100
+	target.pos = Vector2(10.5, 5.5)
+	target.prev_pos = target.pos
+	moving.units.append(walker)
+	moving.units.append(target)
+	_tick(moving, 179)
+	_check(int(moving.stats.rifle_shots) == 0, "moving rifle still aims instead of instant low-threshold firing")
+	_tick(moving, 1)
+	_check(int(moving.stats.rifle_shots) == 1, "moving rifle can complete its longer low-precision aim")
 	var mg_world = _mortar_world(factory, 1)
 	var b: Dictionary = mg_world.buildings[0]
 	b.kind = "mg"
@@ -650,12 +687,12 @@ func _weapon_rules(factory: Callable) -> void:
 	var enemy: Dictionary = State.unit(100, 1, Vector2(20.5, 28.5))
 	enemy.job = "treat"
 	mg_world.units.append(enemy)
-	_tick(mg_world, 1)
+	_tick(mg_world, 30)
 	_check(int(mg_world.stats.mg_shots) == 0, "MG respects fixed 120 degree firing arc")
 	enemy.pos = Vector2(20.5, 12.5)
 	enemy.prev_pos = enemy.pos
-	_tick(mg_world, 1)
-	_check(int(mg_world.stats.mg_shots) == 1, "station MG fires in arc without intercepting itself")
+	_tick(mg_world, 27)
+	_check(int(mg_world.stats.mg_shots) == 1, "station MG aims then fires without intercepting itself")
 
 
 func _machine_gun_preference(factory: Callable) -> void:
@@ -679,7 +716,7 @@ func _machine_gun_preference(factory: Callable) -> void:
 		world.buildings.append(gun)
 		gun.target_id = int(preferred.id)
 		var selected: Dictionary = world.combat_system._choose_target(world, operator, Config.machine_gun(), gun)
-		_check(int(selected.get("id", -1)) == int(preferred.id), "MG retains a valid explicit preference ahead of a nearer automatic enemy")
+		_check(int(selected.get("id", -1)) == int(preferred.id), "MG retains a valid explicit target ahead of nearer enemies")
 		match invalid:
 			"dead":
 				preferred.hp = 0.0
@@ -690,17 +727,172 @@ func _machine_gun_preference(factory: Callable) -> void:
 			"wall": world.buildings.append(State.building(1001, "wall", Rect2i(12, 6, 1, 1)))
 		preferred.prev_pos = preferred.pos
 		selected = world.combat_system._choose_target(world, operator, Config.machine_gun(), gun)
-		_check(int(selected.get("id", -1)) == int(available.id), "MG %s preferred target falls back to a legal enemy" % invalid)
-		# Personal orders stay strict; only the station imposes the fixed firing arc.
-		operator.target_id = int(gun.target_id)
-		selected = world.combat_system._choose_target(world, operator, Config.rifle())
-		if invalid == "arc":
-			_check(int(selected.get("id", -1)) == int(preferred.id), "personal rifle target is not constrained by an MG station's firing arc")
+		if invalid in ["dead", "missing"]:
+			_check(int(selected.get("id", -1)) == int(available.id) and int(gun.target_id) == -1, "MG terminal target clears lock and resumes guard")
 		else:
-			_check(selected.is_empty(), "rifle %s explicit target does not silently fall back" % invalid)
-		_tick(world, 1)
-		_check(int(world.stats.mg_shots) == 1 and int(gun.loaded) == 99, "MG %s fallback fires a real round" % invalid)
-		_check(int(operator.combat_target_id) == int(available.id) and int(operator.station_id) == int(gun.id) and gun.crew == [1], "MG fallback changes firing target without releasing crew")
+			_check(selected.is_empty() and int(gun.target_id) == int(preferred.id), "MG %s target waits without silent retargeting" % invalid)
+		_tick(world, 27)
+		_check(int(world.stats.mg_shots) == (1 if invalid in ["dead", "missing"] else 0), "MG %s lock follows firing eligibility" % invalid)
+		_check(int(operator.station_id) == int(gun.id) and gun.crew == [1], "MG target changes never release its operator")
+
+
+func _unified_cover_boundaries(factory: Callable) -> void:
+	var world = _empty(factory)
+	var shooter: Dictionary = State.unit(1, 0, Vector2(2.5, 5.5))
+	var target: Dictionary = State.unit(100, 1, Vector2(15.5, 5.5))
+	var cover: Dictionary = State.building(1000, "crate", Rect2i(7, 4, 2, 2))
+	cover.screening_strength = 2.0
+	cover.hp = 100000.0
+	world.units.append(shooter)
+	world.units.append(target)
+	world.buildings.append(cover)
+	_close(world.combat_system.cover_probability(cover, 1.0, 0.5), 0.0, "touching shooter has zero cover obstruction")
+	_close(world.combat_system.cover_probability(cover, 1.0, 1.5), 0.3, "shooter distance transition is linear")
+	_close(world.combat_system.cover_probability(cover, 1.0, 2.5), 0.6, "normal shooter distance restores base cover")
+	_close(world.combat_system.cover_probability(cover, 1.0, 100.0), 0.6, "distance never raises cover beyond its base")
+	var bullet: Dictionary = world.combat_system.spawn_direct_projectile(world, shooter, target, Config.rifle(), 1.0)
+	var oracle := RandomNumberGenerator.new()
+	oracle.state = world.rng.state
+	oracle.randf()
+	for frame in range(60): world.combat_system.advance_projectiles(world, 0.01)
+	_check(world.rng.state == oracle.state, "one multi-cell building consumes exactly one cover draw across frames")
+	_check(bullet.cover_checked.size() == 1 and Vector2(bullet.start) == shooter.pos, "cover bookkeeping uses building identity and immutable original muzzle")
+	# Identical unguided rays use the nearest potential victim, not target_id.
+	var selected_seed: int = 0
+	for seed_value in range(1, 1000):
+		oracle.seed = seed_value
+		var roll: float = oracle.randf()
+		if roll > 0.62 and roll < 0.74: selected_seed = seed_value; break
+	_check(selected_seed > 0, "unguided reference fixture has a discriminating cover roll")
+	for posture in [0, 2]:
+		var stray = _empty(factory)
+		var victim: Dictionary = State.unit(100, 1, Vector2(15.5, 5.5))
+		victim.posture = posture
+		var obstacle: Dictionary = State.building(1000, "sandbag", Rect2i(7, 5, 1, 1))
+		obstacle.screening_strength = 2.0
+		stray.units.append(victim)
+		stray.buildings.append(obstacle)
+		var unguided: Dictionary = stray.combat_system.spawn_direct_projectile(stray, shooter, victim, _fast_rifle(), 1.0)
+		unguided.target_id = -1
+		stray.rng.seed = selected_seed
+		stray.combat_system.advance_projectiles(stray, DT)
+		_close(float(victim.hp), 82.0 if posture == 0 else 100.0, "unguided ray uses actual forward posture %d for cover" % posture)
+	var wall: Dictionary = State.building(2000, "wall", Rect2i(5, 4, 1, 3))
+	wall.height = 0.01
+	world.buildings.clear()
+	world.buildings.append(wall)
+	for posture in [0, 1, 2]:
+		target.posture = posture
+		_check(not world.combat_system.has_line_of_fire(world, shooter, target), "fixed wall type blocks posture %d irrespective of height" % posture)
+		world.combat_system.spawn_direct_projectile(world, shooter, target, _fast_rifle(), 1.0)
+		world.combat_system.advance_projectiles(world, DT)
+		_close(float(target.hp), 100.0, "fixed wall intercepts direct/stray paths")
+	var downed: Dictionary = State.unit(101, 1, Vector2(3.5, 5.5))
+	downed.conscious = false
+	world.units.clear()
+	world.units.append(shooter)
+	world.units.append(downed)
+	world.buildings.clear()
+	_check(world.combat_system._choose_target(world, shooter, Config.rifle()).is_empty(), "automatic fire never selects the only visible unconscious enemy")
+	shooter.target_id = int(downed.id)
+	_check(world.combat_system._choose_target(world, shooter, Config.rifle()) == downed, "player can explicitly target an unconscious enemy")
+	shooter.team = 1
+	downed.team = 0
+	_check(world.combat_system._choose_target(world, shooter, Config.rifle()).is_empty() and int(shooter.target_id) == -1, "AI discards a newly downed explicit intention between its slower evaluations")
+
+
+func _weapon_cycles_and_muzzles(factory: Callable) -> void:
+	for style in [0, 1, 2]:
+		var world = _empty(factory)
+		var shooter: Dictionary = State.unit(1, 0, Vector2(2.5, 5.5))
+		var target: Dictionary = State.unit(100, 1, Vector2(12.5, 5.5))
+		shooter.style = style
+		shooter.target_id = int(target.id)
+		target.job = "treat"
+		target.hp = 100000.0
+		target.max_hp = target.hp
+		world.units.append(shooter)
+		world.units.append(target)
+		var shots: Array[float] = []
+		for frame in range(600):
+			var before: int = int(world.stats.rifle_shots)
+			shooter.stability = 1.0
+			_tick(world, 1)
+			if int(world.stats.rifle_shots) > before:
+				shots.append(float(world.time_s))
+				for event_index in range(world.events.size() - 1, -1, -1):
+					var event: Dictionary = world.events[event_index]
+					if event.type != "weapon_fired": continue
+					var pose: Dictionary = Pose.aimed_rifle(shooter.pos, target.pos, int(shooter.posture))
+					_check(Vector2(event.pos).distance_to(Vector2(pose.muzzle)) < 0.00001 and int(event.holder_id) == int(shooter.id), "shot origin and holder match shared rifle pose")
+					break
+		_check(shots.size() >= 2, "style %d produces repeated real shots" % style)
+		if shots.size() < 2: continue
+		_close(shots[0], float(Config.RIFLE_AIM_SECONDS[style]), "style %d first aim duration" % style, DT * 1.1)
+		if style == 0:
+			_close(shots[1] - shots[0], 0.125, "suppression uses mechanical firing rate after short aim", DT * 1.1)
+		elif style == 1:
+			_check(shots.size() >= 4, "normal style produces at least two three-round bursts")
+			if shots.size() >= 4: _close(shots[3] - shots[0], 3.0, "normal complete round cycle is three seconds", DT * 2.1)
+		else:
+			_close(shots[1] - shots[0], 4.5, "cautious single-shot cycle trades time for precision", DT * 2.1)
+	# A visual muzzle offset cannot spawn a bullet through an adjacent wall.
+	var blocked = _empty(factory)
+	var shooter: Dictionary = State.unit(1, 0, Vector2(2.5, 5.5))
+	var target: Dictionary = State.unit(100, 1, Vector2(2.5, 1.5))
+	blocked.buildings.append(State.building(1000, "wall", Rect2i(2, 4, 1, 1)))
+	var pose: Dictionary = Pose.aimed_rifle(shooter.pos, target.pos, 0)
+	var result: Dictionary = blocked.combat_system.spawn_direct_projectile(blocked, shooter, target, Config.rifle(), 1.0, pose.muzzle)
+	_check(result.is_empty() and blocked.projectiles.is_empty() and blocked.events.is_empty(), "barrel crossing a wall cannot bypass it with a muzzle spawn offset")
+	blocked.units.append(shooter)
+	blocked.units.append(target)
+	shooter.target_id = int(target.id)
+	target.job = "treat"
+	_tick(blocked, 20)
+	_check(int(shooter.loaded) == 30 and int(blocked.stats.rifle_shots) == 0, "blocked muzzle cannot consume ammunition or create shots")
+	var turning = _empty(factory)
+	var tracker: Dictionary = State.unit(1, 0, Vector2(2.5, 5.5))
+	var runner: Dictionary = State.unit(100, 1, Vector2(12.5, 5.5))
+	tracker.target_id = int(runner.id)
+	runner.job = "treat"
+	turning.units.append(tracker)
+	turning.units.append(runner)
+	_tick(turning, 90)
+	_check(float(tracker.aim_fraction) > 0.6, "aim accumulates before a large same-target turn")
+	runner.pos = Vector2(-7.5, 5.5)
+	runner.prev_pos = runner.pos
+	_tick(turning, 1)
+	_check(float(tracker.aim_fraction) < 0.1 and int(turning.stats.rifle_shots) == 0, "tracking a target behind the shooter loses aim progress instead of instantly swiveling into a shot")
+	print("COMBAT_V2_CYCLES normal=3sec cautious=4.5sec muzzle_contract=true")
+
+
+func _mortar_unit_target(factory: Callable) -> void:
+	var world = _mortar_world(factory, 2)
+	var mortar: Dictionary = world.buildings[0]
+	mortar.fire_requested = false
+	var target: Dictionary = State.unit(100, 1, Vector2(20.5, 8.5))
+	target.job = "treat"
+	world.units.append(target)
+	var valid: Dictionary = world.combat_system.validate_station_attack(world, int(mortar.id), int(target.id))
+	_check(bool(valid.ok) and not bool(mortar.fire_requested), "station target validation is pure")
+	_check(bool(world.combat_system.request_station_attack(world, int(mortar.id), int(target.id)).ok), "mortar accepts an enemy unit target without releasing crew")
+	_tick(world, 479)
+	_check(int(world.stats.mortar_shots) == 0 and int(mortar.target_id) == int(target.id), "unit-target mortar preserves complete crew and aim duration")
+	target.pos = Vector2(23.5, 8.5)
+	target.prev_pos = target.pos
+	_tick(world, 1)
+	_check(int(world.stats.mortar_shots) == 1 and not bool(mortar.fire_requested), "unit-target command fires exactly one shell")
+	if world.projectiles.is_empty(): return
+	var shell: Dictionary = world.projectiles[0]
+	var impact: Vector2 = shell.impact
+	_check(impact.distance_to(target.pos) <= 1.0 + 0.001, "mortar samples the unit position at actual launch")
+	var pose: Dictionary = Pose.station(mortar.pos, float(mortar.weapon_facing), "mortar")
+	_check(Vector2(shell.start).distance_to(Vector2(pose.muzzle)) < 0.00001, "mortar starts from shared barrel muzzle")
+	target.pos = Vector2(35.5, 8.5)
+	target.prev_pos = target.pos
+	_tick(world, 60)
+	_check(Vector2(shell.impact) == impact and int(world.stats.mortar_shots) == 1, "airborne mortar never tracks and does not repeat a one-shot unit order")
+	_check(mortar.crew == [1, 2] and int(world.units[0].station_id) == int(mortar.id), "unit-target mortar keeps both operators assigned")
 
 
 func _terminal_trails(factory: Callable) -> void:

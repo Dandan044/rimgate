@@ -132,8 +132,12 @@ func _run() -> void:
 	_check(screen.camera.position != pan_start, "middle drag pans while deployment is paused")
 	_key(KEY_3); _key(KEY_F)
 	_check(screen.aim_station == stations[2].id, "F enters bombardment using projected crew")
-	_click(Vector2(700, 350), MOUSE_BUTTON_RIGHT)
-	_check(screen.aim_station < 0, "right click cancels bombardment mode")
+	_click(_grid(Vector2(31.5, 28.5)), MOUSE_BUTTON_RIGHT)
+	_check(screen.aim_station < 0 and screen.world.pending_orders.back().kind == "move", "new right click cancels bombardment and immediately queues movement")
+	# The replacement movement intentionally releases unit 3's projected post.
+	# Reassign it through the same GUI before testing a fire subcommand.
+	_click(_grid(stations[2].pos), MOUSE_BUTTON_RIGHT)
+	if not await _popup_action("operate"): _end(); return
 	_key(KEY_F)
 	var before_orders: int = screen.world.pending_orders.size()
 	_click(_grid(stations[2].pos))
