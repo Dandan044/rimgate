@@ -171,7 +171,32 @@ func run(factory: Callable) -> Array[String]:
 	_test_grid_occupancy(factory)
 	_test_grid_medical_and_commands(factory)
 	_test_auto_posture_recovery(factory)
+	_placement_cache_equivalence(factory)
 	return failures
+
+func _placement_cache_equivalence(factory: Callable) -> void:
+	var worlds: Array = [factory.call(), factory.call()]
+	worlds[1].unit_system.use_placement_cache = false
+	for w in worlds:
+		w.spawn_wave(0); w.spawn_wave(1); w.spawn_wave(2); w.next_wave = 3
+		w.submit([1], "operate", {"target_id": w.stations()[0].id})
+		w.submit([2], "operate", {"target_id": w.stations()[1].id})
+		w.submit([3, 4], "operate", {"target_id": w.stations()[2].id})
+		w.submit([5, 6], "move", {"position": Vector2(26.5, 26.5)})
+		w.start_battle()
+	for tick in range(900):
+		for w in worlds:
+			if tick == 180: w.submit([5, 6], "move", {"position": Vector2(26.5, 22.5)})
+			if tick == 360:
+				var patient: Dictionary = w.entity(6)
+				patient.hp = 20.0; patient.bleed_rate = 0.1; patient.conscious = false
+				w.submit([5], "rescue", {"target_id": 6})
+			w.step()
+		var a = worlds[0]; var b = worlds[1]
+		var same: bool = var_to_bytes([a.units, a.buildings, a.supplies, a.events, a.stats, a.rng.state]) == var_to_bytes([b.units, b.buildings, b.supplies, b.events, b.stats, b.rng.state])
+		if not same:
+			_check(false, "AI placement snapshot differs from live ownership at step %d" % tick); return
+	print("UNIT_PLACEMENT_EQUIVALENCE steps=900 exact_state_events_rng=true")
 
 func _test_auto_posture_recovery(factory: Callable) -> void:
 	var w = _grid_world(factory, [Vector2(5.5, 5.5)])

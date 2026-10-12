@@ -8,6 +8,9 @@ var arrival_serial: int = 0
 var occupied_cells: Dictionary = {}
 var reserved_cells: Dictionary = {}
 var reserved_edges: Dictionary = {}
+var use_placement_cache := true
+var _placement_scope := false
+var _placement_blockers: Dictionary = {}
 const INVALID_CELL := Vector2i(-1, -1)
 const INTERACTION_DISTANCE := 1.01
 const SETTINGS := ["posture", "style"]
@@ -77,6 +80,13 @@ func destination_available(world, point: Vector2, ignore_id: int = -1) -> bool:
 func _destination_free(world, point: Vector2, ignored: Array, projection: Dictionary = {}) -> bool:
 	if not _can_stand(world, point): return false
 	var cell := _cell(point)
+	# AI evaluates hundreds of candidate squares without moving anyone between
+	# those queries. Build its ownership snapshot once, then discard it before
+	# the next unit moves. Public/projected orders keep the live query below.
+	if _placement_scope and projection.is_empty():
+		for owner in _placement_blockers.get(cell, {}):
+			if not ignored.has(int(owner)): return false
+		return true
 	for other in world.units:
 		if ignored.has(int(other.id)) or int(other.carrier_id) >= 0: continue
 		# Bodies allow transit, but never form another active unit's final square.
@@ -1014,6 +1024,33 @@ func _nearest_opponent(world, u: Dictionary) -> Dictionary:
 	return result
 
 func _enemy_ai(world, u: Dictionary) -> void:
+	if use_placement_cache:
+		_placement_blockers.clear()
+		for other in world.units:
+			if int(other.carrier_id) >= 0: continue
+			_placement_add(_cell(other.pos), int(other.id))
+			if not _active(other): continue
+			if bool(other.get("move_active", false)):
+				_placement_add(Vector2i(other.move_from), int(other.id))
+				_placement_add(Vector2i(other.move_to), int(other.id))
+			if not other.path.is_empty(): _placement_add(_cell(other.goal), int(other.id))
+			if int(other.station_id) >= 0:
+				var station: Dictionary = world.entity(int(other.station_id))
+				if not station.is_empty():
+					var seat: int = maxi(0, int(other.get("station_seat", 0)))
+					_placement_add(_cell(station.crew_points[mini(seat, station.crew_points.size() - 1)]), int(other.id))
+		for slot in world.medical_reservations:
+			_placement_add(_cell(world.medical_slots[int(slot)]), int(world.medical_reservations[slot]))
+		_placement_scope = true
+	_enemy_ai_live(world, u)
+	_placement_scope = false
+	_placement_blockers.clear()
+
+func _placement_add(cell: Vector2i, owner: int) -> void:
+	if not _placement_blockers.has(cell): _placement_blockers[cell] = {}
+	_placement_blockers[cell][owner] = true
+
+func _enemy_ai_live(world, u: Dictionary) -> void:
 	if u.forced_prone or world.time_s < float(u.rout_until): return
 	if int(u.loaded) <= 0 and int(u.reserve) <= 0:
 		u.target_id = -1; u.ai_target_id = -1
