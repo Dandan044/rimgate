@@ -6,7 +6,7 @@ Godot 4.7.2 / Windows x64。原创俯视战术防御 Demo，6 名守军在一张
 
 ## 游玩
 
-解压 Windows 包，运行 `Rimgate.exe`。不需要安装 Godot，也不需要联网。
+解压 Windows 包，运行 `Rimgate.exe`，并保留相邻的 `Rimgate.pck`。不需要安装 Godot，也不需要联网。详细操作见 [游玩说明](docs/PLAY_V2.md)。
 
 - 左键选人，拖框多选，Shift 增选；右键地面移动，右键敌人指定攻击。
 - 右键机枪或迫击炮选择操控或补给。机枪限 1 人，迫击炮限 2 人；工事需要人员在岗才能工作。

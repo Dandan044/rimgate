@@ -12,4 +12,4 @@
 
 交付使用重武器组的35条公开命令，保存在 `scripts/qa/verified_tactic_v2.gd`。源码独立回放完成28,800步，状态指纹 **1203213846** 完全一致。指纹覆盖时间、单位、建筑、物资、弹丸、统计和RNG；不覆盖事件、历史命令、医疗库存/预约、阶段或显示，实时QA会另查阶段/人员/命令数及结果页。
 
-原始五组报告为 `build/reports/tactical_comparison_current.json`，独立源码回放日志为 `.tools/v2-final-replay.log`。这些文件随v0.2证据包提供。
+原始五组报告为 [战术报告](../build/reports/tactical_comparison_current.json)，最终独立源码回放日志为 [回放日志](../build/v2_evidence/logs/v2-optimized-replay.log)。这些文件随v0.2证据包提供。
