@@ -10,7 +10,7 @@ EXE由Godot模板生成，资源和游戏脚本位于相邻PCK中，两者必须
 
 `tools/build.ps1 -ExportOnly -ExportDirectory build/release_v0.2_windows` 将导出提交、产品指纹及二进制哈希写入 `EXPORT.json`。指纹覆盖Git跟踪的 `project.godot`、`main.tscn`、`export_presets.cfg`、`scripts/`、`assets/` 的路径和文件SHA256。文档、测试与工具不参与产品指纹，因此最终整理这些文件后可用 `-PackageOnly` 原样打包已测试的导出；该命令会重新核对指纹与二进制哈希，拒绝混用修改后的产品源码。
 
-最终交付的 `VERSION.json` 和 `Rimgate-demo-v0.2.0-manifest.json` 分别记录 `export_source_commit` 与包含最终文档/测试/工具的 `source_commit`。源码ZIP通过 `git archive HEAD` 生成，ZIP注释中的提交须与清单一致。打包校验结果随独立证据包提供。
+最终交付的 `VERSION.json` 和 `Rimgate-demo-v0.2.0-manifest.json` 分别记录 `export_source_commit` 与包含最终文档/测试/工具的 `source_commit`。源码ZIP通过 `git -c core.autocrlf=false archive HEAD` 生成，保留提交中的原始字节而不套用本机CRLF转换，ZIP注释中的提交须与清单一致。打包校验结果随独立证据包提供。
 
 最终导出用于实时压力、48项输入、完整480秒防守、离线运动录像和30分钟长运行。额外5项工事鼠标检查使用同一个PCK，通过 `--main-pack` 加载；不由源码目录替代游戏代码。[验收报告](V2_TEST_REPORT.md)说明各夹具及限制。
 

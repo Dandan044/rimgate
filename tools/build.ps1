@@ -82,7 +82,8 @@ try {
     $windowsZip = "$projectRoot/build/Rimgate-demo-v$Version-windows-x64.zip"
     $sourceZip = "$projectRoot/build/Rimgate-demo-v$Version-source.zip"
     Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $windowsZip -Force
-    & git archive --format=zip --output=$sourceZip HEAD
+    # Preserve committed bytes rather than applying this machine's CRLF checkout conversion.
+    & git -c core.autocrlf=false archive --format=zip --output=$sourceZip HEAD
     if ($LASTEXITCODE -ne 0) { throw 'Source archive failed.' }
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$projectRoot/build/Rimgate-demo-v$Version-manifest.json" -Encoding utf8
     Get-FileHash -Algorithm SHA256 -LiteralPath $windowsZip, $sourceZip | Select-Object Path, Hash
