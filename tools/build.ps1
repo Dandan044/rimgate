@@ -14,6 +14,8 @@ $enginePath = [IO.Path]::GetFullPath($Godot)
 Push-Location $projectRoot
 try {
     if ($PackageOnly -and $ExportOnly) { throw 'Choose PackageOnly or ExportOnly.' }
+    $projectVersion = [regex]::Match((Get-Content -LiteralPath 'project.godot' -Raw), '(?m)^config/version="([^"]+)"\s*$')
+    if (!$projectVersion.Success -or $projectVersion.Groups[1].Value -ne $Version) { throw 'Requested package version differs from application/config/version in project.godot.' }
     $series = $Version.Split('.')[1]
     if (!$TestReport) { $TestReport = "docs/V${series}_TEST_REPORT.md" }
     if (!$EvidenceDirectory) { $EvidenceDirectory = "build/v${series}_delivery_evidence/build" }
@@ -74,28 +76,46 @@ try {
     $stage = Join-Path $projectRoot ("build/package-$Version-" + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
     Copy-Item -LiteralPath $executable, $pck -Destination $stage
-    Copy-Item -LiteralPath 'README.md', 'DEMO_PLAN.md', 'GAME_DESIGN.md', 'DEMO_V2_PLAN.md' -Destination $stage
-    if (Test-Path -LiteralPath 'DEMO_V3_PLAN.md') { Copy-Item -LiteralPath 'DEMO_V3_PLAN.md' -Destination $stage }
+    $sourceZip = "$projectRoot/build/Rimgate-demo-v$Version-source.zip"
+    # Archive committed bytes first. A Windows checkout may have CRLF files
+    # while the exact source revision stores LF; both packages use this archive.
+    & git -c core.autocrlf=false archive --format=zip --output=$sourceZip HEAD
+    if ($LASTEXITCODE -ne 0) { throw 'Source archive failed.' }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $packageArchive = [IO.Compression.ZipFile]::OpenRead($sourceZip)
     $stageDocs = Join-Path $stage 'docs'
     New-Item -ItemType Directory -Path $stageDocs -Force | Out-Null
-    # Review originals belong in the source ZIP, not the playable download.
-    Get-ChildItem -LiteralPath 'docs' -File | Where-Object { $_.Extension -in '.md', '.txt' } | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $stageDocs }
-    Copy-Item -LiteralPath 'assets/audio/LICENSES.txt' -Destination (Join-Path $stage 'AUDIO_LICENSES.txt')
     $audioNotices = Join-Path $stage 'source'
     New-Item -ItemType Directory -Path $audioNotices -Force | Out-Null
-    Copy-Item -LiteralPath 'assets/audio/source/Tabasco-original-license.txt', 'assets/audio/source/Kenney-original-license.txt', 'assets/audio/source/MANIFEST.json' -Destination $audioNotices
-    Copy-Item -LiteralPath 'assets/fonts/LICENSE.txt' -Destination (Join-Path $stage 'FONT_LICENSE.txt')
+    try {
+        function Copy-CommittedFile([string]$Source, [string]$Destination) {
+            $entry = $packageArchive.GetEntry($Source)
+            if ($null -eq $entry) { throw "Missing committed package member: $Source" }
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $Destination, $true)
+        }
+        foreach ($name in @('README.md','DEMO_PLAN.md','GAME_DESIGN.md','DEMO_V2_PLAN.md')) {
+            Copy-CommittedFile $name (Join-Path $stage $name)
+        }
+        if ($packageArchive.GetEntry('DEMO_V3_PLAN.md')) { Copy-CommittedFile 'DEMO_V3_PLAN.md' (Join-Path $stage 'DEMO_V3_PLAN.md') }
+        # Review originals remain in source; playable docs are top-level only.
+        foreach ($entry in $packageArchive.Entries) {
+            if ($entry.FullName -match '^docs/[^/]+\.(md|txt)$') {
+                Copy-CommittedFile $entry.FullName (Join-Path $stage $entry.FullName)
+            }
+        }
+        Copy-CommittedFile 'assets/audio/LICENSES.txt' (Join-Path $stage 'AUDIO_LICENSES.txt')
+        foreach ($name in @('Tabasco-original-license.txt','Kenney-original-license.txt','MANIFEST.json')) {
+            Copy-CommittedFile "assets/audio/source/$name" (Join-Path $audioNotices $name)
+        }
+        Copy-CommittedFile 'assets/fonts/LICENSE.txt' (Join-Path $stage 'FONT_LICENSE.txt')
+    } finally { $packageArchive.Dispose() }
     # Optional generated evidence preserves the relative screenshot/report links.
     if (Test-Path -LiteralPath $EvidenceDirectory) {
         Copy-Item -LiteralPath $EvidenceDirectory -Destination $stage -Recurse
     }
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stage 'VERSION.json') -Encoding utf8
     $windowsZip = "$projectRoot/build/Rimgate-demo-v$Version-windows-x64.zip"
-    $sourceZip = "$projectRoot/build/Rimgate-demo-v$Version-source.zip"
     Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $windowsZip -Force
-    # Preserve committed bytes rather than applying this machine's CRLF checkout conversion.
-    & git -c core.autocrlf=false archive --format=zip --output=$sourceZip HEAD
-    if ($LASTEXITCODE -ne 0) { throw 'Source archive failed.' }
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$projectRoot/build/Rimgate-demo-v$Version-manifest.json" -Encoding utf8
     Get-FileHash -Algorithm SHA256 -LiteralPath $windowsZip, $sourceZip | Select-Object Path, Hash
 } finally { Pop-Location }

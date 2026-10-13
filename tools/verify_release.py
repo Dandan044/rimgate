@@ -153,6 +153,10 @@ def main():
             committed_files = {info.filename: expected.read(info) for info in expected.infolist() if not info.is_dir()}
         tracked = subprocess.check_output(["git", "ls-tree", "-rz", "--name-only", commit], cwd=root, stderr=subprocess.PIPE).decode("utf-8").rstrip("\0").split("\0")
         check(set(committed_files) == set(tracked), "git archive includes exactly the manifest commit's tracked files")
+        project_text = committed_files.get("project.godot", b"").decode("utf-8-sig")
+        project_version = re.search(r'^config/version="([^"]+)"\s*$', project_text, re.MULTILINE)
+        check(project_version is not None and project_version.group(1) == args.version,
+              "Committed application version matches the release manifest")
         product_diff = subprocess.check_output(["git", "diff", "--name-only", str(manifest["export_source_commit"]), commit, "--", "project.godot", "main.tscn", "export_presets.cfg", "scripts", "assets"], cwd=root, stderr=subprocess.PIPE)
         check(not product_diff.strip(), "Final source commit retains all product bytes from the tested export commit", product_diff.decode("utf-8", errors="replace").strip() or None)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
@@ -220,7 +224,7 @@ def main():
                     check(data is not None and len(data) > 0 and name in committed_files and data == committed_files[name], f"Packaged release document matches source commit: {name}")
 
                 reports = {}
-                for label in ["input", "benchmark", "victory", "motion", "soak", "soak-process", "soak-memory-recheck"]:
+                for label in ["input", "benchmark", "victory", "motion", "short", "soak", "soak-process", "soak-memory-recheck"]:
                     name = f"{prefix}_{label}.json"
                     result = read_json(name); reports[label] = result
                     has_verdict = result.get("failures") == [] or result.get("passed") is True
@@ -229,8 +233,26 @@ def main():
                     check(str(result.get("pck_sha256", "")).upper() == str(manifest.get("pck_sha256", "")).upper() and bool(result.get("pck_sha256")), f"Final {label} report identifies the packaged PCK")
                     if isinstance(result.get("checks"), list) and any(isinstance(item, dict) for item in result["checks"]):
                         check(all(isinstance(item, dict) and item.get("passed") is True for item in result["checks"]), f"Every enumerated {label} check passes")
+                for label in ["input", "benchmark", "victory", "motion", "short", "soak"]:
+                    raw_log = read(f"{prefix}_{label}.log")
+                    log_text = raw_log.decode("utf-8-sig", errors="replace") if raw_log is not None else ""
+                    clean_log = bool(log_text) and not re.search(
+                        r"SCRIPT ERROR|ERROR:|ObjectDB instances were leaked|resources still in use at exit", log_text)
+                    check(clean_log, f"Final {label} runtime log is present and free of errors/resource leaks")
+                    if label != "input":
+                        check(reports[label].get("version") == args.version,
+                              f"Final {label} runtime identifies the released application version")
                 input_result = reports["input"]
                 check(bool(input_result.get("checks")), "Final input evidence contains actual enumerated checks")
+                raw_input_bytes = read(f"{prefix}_input_raw.json")
+                raw_input = read_json(f"{prefix}_input_raw.json")
+                check(raw_input_bytes is not None and str(input_result.get("raw_report_sha256", "")).upper() == sha(raw_input_bytes),
+                      "Input wrapper binds the unchanged raw Viewport report")
+                check(raw_input.get("passed") is True and input_result.get("passed") is True and
+                      raw_input.get("checks") == input_result.get("checks") and input_result.get("process_exit_code") == 0,
+                      "Input wrapper preserves all raw checks and records a successful process exit")
+                check(str(raw_input.get("pck_sha256", "")).upper() == str(manifest.get("pck_sha256", "")).upper(),
+                      "Raw embedded input report identifies the tested PCK")
                 benchmark = reports["benchmark"]
                 check(benchmark.get("mode") == "benchmark" and float(benchmark.get("elapsed_seconds", 0)) >= 65 and int(benchmark.get("frames", 0)) > 0 and not benchmark.get("offline_movie_capture", False), "Benchmark is a real-time sample of at least 65 seconds")
                 check(float(benchmark.get("average_fps", 0)) >= 60 and 0 < float(benchmark.get("p95_ms", 0)) <= 33.3, "Benchmark meets average 60 FPS and P95 33.3 ms gates")
@@ -241,6 +263,9 @@ def main():
                 check("snapshot_hash" in actual and "state_hash" in expected and actual["snapshot_hash"] == expected["state_hash"] and int(actual.get("commands", 0)) > 0, "Final victory agrees with the version's public-command replay fingerprint")
                 motion = reports["motion"]
                 check(motion.get("mode") == "motion" and float(motion.get("recorded_seconds", 0)) >= 20, "Motion report records at least 20 seconds of actual rendered actions")
+                short = reports["short"]
+                check(short.get("mode") == "short" and float(short.get("elapsed_seconds", 0)) >= 150,
+                      "Short real-time visual smoke check runs for at least 150 seconds")
                 soak = reports["soak"]; process = reports["soak-process"]; memory = reports["soak-memory-recheck"]
                 check(float(soak.get("elapsed_seconds", 0)) >= 1800 and int(soak.get("restarts", 0)) >= 5, "Soak runtime meets 30-minute and restart gates")
                 check(process.get("completed") is True and process.get("game_exit_code") == 0 and float(process.get("elapsed_seconds", 0)) >= 1800, "Soak monitor records a completed normal process exit")
@@ -257,6 +282,7 @@ def main():
                 check(raw_process is not None and str(memory.get("input_report_sha256", "")).upper() == sha(raw_process), "Memory recheck binds the actual raw process report")
 
                 media = read(media_name)
+                metadata = {}
                 if media is not None:
                     try:
                         metadata = mp4_metadata(media)
@@ -269,6 +295,11 @@ def main():
                 check(valid_pngs and pause_data[0] == pause_data[1], "Two valid recorded pause PNG frames are byte-identical")
                 audio = read_json(audio_name)
                 check(audio.get("passed") is True and int(audio.get("channels", 0)) == 2 and float(audio.get("seconds", 0)) >= 20 and float(audio.get("peak", 0)) > 0 and int(audio.get("clipped_samples", -1)) == 0 and float(audio.get("stereo_difference_rms", 0)) > 0, "Recorded audio analysis proves non-silent stereo without clipping")
+                check(media is not None and str(audio.get("media_sha256", "")).upper() == sha(media) and
+                      str(audio.get("pck_sha256", "")).upper() == str(manifest.get("pck_sha256", "")).upper() and
+                      float(metadata.get("duration_seconds") or 0) > 0 and
+                      abs(float(audio.get("seconds", 0)) - float(metadata.get("duration_seconds") or 0)) <= .3,
+                      "Audio analysis is bound to this exact MP4, tested PCK and recorded duration")
                 for name in args.extra_report:
                     extra = read_json(name)
                     check(bool(extra) and extra.get("passed") is True and ("failures" not in extra or extra["failures"] == []), f"Additional evidence passes: {name}")

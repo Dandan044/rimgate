@@ -11,12 +11,16 @@ function Start-GameCheck([string]$Mode, [string[]]$EngineArguments = @()) {
     $taskArgs = @('--resolution', '1920x1080', '--log-file', ('"{0}"' -f (Join-Path $taskReports "v3_final_$Mode.log"))) + $EngineArguments + @('--', "--qa-mode=$Mode", ('--qa-report="{0}"' -f (Join-Path $taskReports "v3_final_$Mode.json")))
     if ($Mode -eq 'motion') { $taskArgs += '--qa-offline-movie' }
     $taskProcess = Start-Process -FilePath $taskExe -WorkingDirectory (Split-Path -Parent $taskExe) -WindowStyle Hidden -PassThru -ArgumentList $taskArgs
+    # Keep the native handle open across Refresh/HasExited polling.
+    $null = $taskProcess.Handle
+    $taskProcess | Add-Member -NotePropertyName QaStartedUtc -NotePropertyValue $taskProcess.StartTime.ToUniversalTime()
     Write-Output "V3_RUNTIME_STARTED mode=$Mode pid=$($taskProcess.Id) pck=$taskHash"
     return $taskProcess
 }
 function Confirm-GameCheck([string]$Mode, $Process) {
     $Process.WaitForExit()
     $taskResult = Get-Content -LiteralPath (Join-Path $taskReports "v3_final_$Mode.json") -Raw | ConvertFrom-Json
+    if ((Get-Item -LiteralPath (Join-Path $taskReports "v3_final_$Mode.json")).LastWriteTimeUtc -lt $Process.QaStartedUtc.AddSeconds(-2)) { throw "Runtime $Mode report predates this execution." }
     if ($Process.ExitCode -ne 0 -or @($taskResult.failures).Count -gt 0 -or $taskResult.pck_sha256 -ne $taskHash) { throw "Runtime $Mode failed or refers to a different PCK." }
     $taskLog = Get-Content -LiteralPath (Join-Path $taskReports "v3_final_$Mode.log") -Raw
     if ($taskLog -match 'SCRIPT ERROR|ERROR:|ObjectDB instances were leaked|resources still in use at exit') { throw "Runtime $Mode log contains an error or resource leak." }
@@ -30,6 +34,7 @@ if (!$SkipMotion) {
 }
 $taskMonitorArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f (Join-Path $taskRoot 'tools/soak.ps1')), '-Executable', ('"{0}"' -f $taskExe), '-ReportPrefix', ('"{0}"' -f (Join-Path $taskReports 'v3_final_soak')))
 $taskSoak = Start-Process -FilePath 'powershell.exe' -WorkingDirectory $taskRoot -WindowStyle Hidden -PassThru -ArgumentList $taskMonitorArgs -RedirectStandardOutput (Join-Path $taskReports 'v3_final_soak-monitor.log') -RedirectStandardError (Join-Path $taskReports 'v3_final_soak-monitor-errors.log')
+$null = $taskSoak.Handle
 $taskVictory = @(Start-GameCheck 'victory')[-1]
 $taskShort = @(Start-GameCheck 'short')[-1]
 Write-Output "V3_LONG_CHECKS_LIVE soak_monitor_pid=$($taskSoak.Id) victory_pid=$($taskVictory.Id) short_pid=$($taskShort.Id)"
@@ -48,6 +53,7 @@ while ($true) {
 Confirm-GameCheck 'victory' $taskVictory
 Confirm-GameCheck 'short' $taskShort
 $taskSoak.WaitForExit()
+if ($null -eq $taskSoak.ExitCode) { throw 'Soak monitor exit code is unavailable; inspect its raw reports and process handle rather than treating this as a game failure.' }
 if ($taskSoak.ExitCode -ne 0) { throw 'The actual soak monitor reported a failure.' }
 & "$PSScriptRoot/check_soak_memory.ps1" -ReportPrefix (Join-Path $taskReports 'v3_final_soak')
 if ($LASTEXITCODE -ne 0) { throw 'Independent process-memory recheck failed.' }
