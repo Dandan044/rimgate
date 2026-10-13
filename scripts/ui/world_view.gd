@@ -181,7 +181,10 @@ func _draw_unit(u: Dictionary) -> void:
 	var point: Vector2 = unit_position(u) * GRID
 	# CanvasItem culling sees this entire battlefield as one item. Avoid issuing
 	# commands for fully offscreen sprites, retaining room for bars and labels.
-	if not visible_world_rect.grow(maxf(160,80/screen.camera.zoom.x)).has_point(point):return
+	# Friendly paper dolls advance head-transition history while drawing. Keep
+	# this small (at most 20) group active offscreen, so panning back cannot
+	# restart a posture animation. Fixed-outfit enemies have no such history.
+	if int(u.team)!=0 and not visible_world_rect.grow(maxf(160,80/screen.camera.zoom.x)).has_point(point):return
 	var is_selected: bool = screen.selected.has(int(u.id))
 	var down: bool = not bool(u.conscious) or bool(u.dead)
 	var facing: float = motion.weapon_facing(u) if String(u.get("weapon_state", "idle")) in ["aiming", "firing", "recovering"] else motion.unit_facing(u)
