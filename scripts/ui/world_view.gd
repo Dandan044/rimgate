@@ -20,6 +20,13 @@ var terrain: Texture2D
 var effects: Array[Dictionary] = []
 var visual_time: float = 0.0
 var font: Font
+var visible_world_rect := Rect2()
+var visible_effects: Array[Dictionary] = []
+var frame_recoil: Dictionary = {}
+var frame_flash: Dictionary = {}
+var feedback_cached := false
+var shadow_mesh: ArrayMesh
+var particle_mesh: ArrayMesh
 
 func _ready() -> void:
 	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
@@ -87,6 +94,10 @@ func on_event(event: Dictionary) -> void:
 func _draw() -> void:
 	if world == null:
 		return
+	var inverse:=get_canvas_transform().affine_inverse()
+	var viewport:=get_viewport_rect()
+	visible_world_rect=Rect2(inverse*viewport.position,inverse*viewport.end-inverse*viewport.position)
+	_cache_frame_feedback()
 	_draw_station_ranges()
 	var things: Array[Dictionary] = []
 	for b in world.buildings:
@@ -110,10 +121,26 @@ func _draw() -> void:
 	_draw_cover_preview()
 	_draw_aim_preview()
 	_draw_unit_aims()
+	feedback_cached=false
+
+func _cache_frame_feedback() -> void:
+	visible_effects.clear();frame_recoil.clear();frame_flash.clear()
+	for fx in effects:
+		if not motion.event_ready(fx.data):continue
+		visible_effects.append(fx)
+		if fx.kind=="weapon_fired":
+			var holder_id:=int(fx.data.get("holder_id",fx.data.get("entity_id",-1)))
+			var kick:=4.0*sin(clampf(float(fx.age)/float(fx.life),0,1)*PI)
+			frame_recoil[holder_id]=maxf(float(frame_recoil.get(holder_id,0)),kick)
+		elif fx.kind=="damage":
+			var holder_id:=int(fx.data.get("entity_id",-1))
+			frame_flash[holder_id]=maxf(float(frame_flash.get(holder_id,0)),1.0-float(fx.age)/float(fx.life))
+	feedback_cached=true
 
 func _draw_building(b: Dictionary) -> void:
 	var point: Vector2 = b.pos * GRID
 	var rect: Rect2 = Rect2(Vector2(b.rect.position) * GRID, Vector2(b.rect.size) * GRID)
+	if not visible_world_rect.grow(maxf(160,80/screen.camera.zoom.x)).intersects(rect):return
 	if b.destroyed:
 		if b.kind=="core":environment_art.draw_core(self,b,rect,visual_time)
 		else:_prop(3,rect.grow(-3),Color(.8,.8,.8,.8))
@@ -152,6 +179,9 @@ func _draw_building(b: Dictionary) -> void:
 
 func _draw_unit(u: Dictionary) -> void:
 	var point: Vector2 = unit_position(u) * GRID
+	# CanvasItem culling sees this entire battlefield as one item. Avoid issuing
+	# commands for fully offscreen sprites, retaining room for bars and labels.
+	if not visible_world_rect.grow(maxf(160,80/screen.camera.zoom.x)).has_point(point):return
 	var is_selected: bool = screen.selected.has(int(u.id))
 	var down: bool = not bool(u.conscious) or bool(u.dead)
 	var facing: float = motion.weapon_facing(u) if String(u.get("weapon_state", "idle")) in ["aiming", "firing", "recovering"] else motion.unit_facing(u)
@@ -260,6 +290,7 @@ func _draw_rifle(point: Vector2, facing: float, posture: int, holder_id: int) ->
 	draw_set_transform(Vector2.ZERO)
 
 func _recoil(holder_id: int) -> float:
+	if feedback_cached:return float(frame_recoil.get(holder_id,0))
 	var kick: float = 0.0
 	for fx in effects:
 		if fx.kind != "weapon_fired" or not motion.event_ready(fx.data): continue
@@ -268,6 +299,7 @@ func _recoil(holder_id: int) -> float:
 	return kick
 
 func _damage_flash(unit_id: int) -> float:
+	if feedback_cached:return float(frame_flash.get(unit_id,0))
 	var flash: float = 0.0
 	for fx in effects:
 		if fx.kind == "damage" and int(fx.data.get("entity_id", -1)) == unit_id and motion.event_ready(fx.data):
@@ -321,6 +353,7 @@ func _draw_projectiles() -> void:
 	for projectile in motion.current_projectiles.values():
 		if not motion.projectile_visible(projectile): continue
 		var point: Vector2 = motion.projectile_position(projectile) * GRID
+		if not visible_world_rect.grow(180).has_point(point):continue
 		var kind: String = projectile.get("kind", "bullet")
 		if kind == "mortar":
 			var progress: float = motion.projectile_age(projectile) / 3.0
@@ -336,10 +369,10 @@ func _draw_projectiles() -> void:
 			draw_line(point - velocity.normalized() * trail, point, color, 1.8 if kind != "fragment" else 1.2, true)
 
 func _draw_effects() -> void:
-	for fx in effects:
-		if not motion.event_ready(fx.data): continue
+	for fx in visible_effects:
 		var progress: float = float(fx.age) / float(fx.life)
 		var point: Vector2 = fx.pos
+		if not visible_world_rect.grow(300).has_point(point):continue
 		var alpha: float = 1.0 - progress
 		match String(fx.kind):
 			"unit_state_changed":
@@ -368,15 +401,15 @@ func _draw_effects() -> void:
 					draw_set_transform(point, facing)
 					var flame := PackedVector2Array([Vector2(-3, -3), Vector2(8, -5), Vector2(18, 0), Vector2(8, 5), Vector2(-3, 3)])
 					draw_colored_polygon(flame, Color(1.0, 0.68, 0.26, alpha * 0.85))
-					draw_circle(Vector2(3, 0), 4.0, Color(1.0, 0.94, 0.7, alpha))
+					_draw_particle_circle(Vector2(3, 0), 4.0, Color(1.0, 0.94, 0.7, alpha))
 					draw_set_transform(Vector2.ZERO)
 			"explosion":
 				if progress < 0.25:
-					draw_circle(point, 35 + progress * 200, Color(1, 0.75, 0.34, alpha * 0.7))
+					_draw_particle_circle(point, 35 + progress * 200, Color(1, 0.75, 0.34, alpha * 0.7))
 				draw_arc(point, 20 + progress * 230, 0, TAU, 48, Color(0.94, 0.85, 0.66, alpha * 0.7), 4 * alpha + 1, true)
 				for i in range(7):
 					var off: Vector2 = Vector2.from_angle(float(i) * 2.39) * progress * 85
-					draw_circle(point + off + Vector2(0, -progress * 30), 15 + progress * 38, Color(0.24, 0.27, 0.23, alpha * 0.28))
+					_draw_particle_circle(point + off + Vector2(0, -progress * 30), 15 + progress * 38, Color(0.24, 0.27, 0.23, alpha * 0.28))
 			"damage":
 				if not world.entity(int(fx.data.get("entity_id", -1))).has("team"):
 					draw_arc(point, 12 + progress * 10, 0, TAU, 12, Color(0.86, 0.31, 0.23, alpha * 0.6), 2, true)
@@ -393,12 +426,12 @@ func _draw_effects() -> void:
 				elif material == "unit":
 					for i in range(3):
 						var offset := Vector2.from_angle(float(i) * 2.1) * progress * 12.0
-						draw_circle(point + offset, 2.5 * alpha, Color(0.65, 0.24, 0.2, alpha * 0.65))
+						_draw_particle_circle(point + offset, 2.5 * alpha, Color(0.65, 0.24, 0.2, alpha * 0.65))
 				else:
 					var dust := Color(0.67, 0.59, 0.4, alpha * 0.32) if material == "sandbag" else Color(0.48, 0.4, 0.3, alpha * 0.35)
 					for i in range(4):
 						var offset := Vector2.from_angle(float(i) * 2.39) * progress * 15.0
-						draw_circle(point + offset + Vector2(0, -progress * 8), 3.0 + progress * 7.0, dust)
+						_draw_particle_circle(point + offset + Vector2(0, -progress * 8), 3.0 + progress * 7.0, dust)
 			_:
 				for i in range(4):
 					var direction: Vector2 = Vector2.from_angle(float(i) * 1.57 + 0.4)
@@ -537,8 +570,21 @@ func _unit_bar(anchor: Vector2, value: float, color: Color, suppression: bool = 
 	draw_set_transform(Vector2.ZERO)
 
 func draw_ellipse_shadow(center: Vector2, radii: Vector2, color: Color) -> void:
-	var points: PackedVector2Array = PackedVector2Array()
-	for i in range(24):
-		points.append(center + Vector2(cos(float(i) / 24 * TAU) * radii.x, sin(float(i) / 24 * TAU) * radii.y))
-	draw_colored_polygon(points, color)
+	if shadow_mesh==null:
+		var points:=PackedVector2Array()
+		for i in range(24):points.append(Vector2(cos(float(i)/24*TAU),sin(float(i)/24*TAU)))
+		var arrays:=[];arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX]=points
+		arrays[Mesh.ARRAY_INDEX]=Geometry2D.triangulate_polygon(points)
+		shadow_mesh=ArrayMesh.new();shadow_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
+	draw_mesh(shadow_mesh,null,Transform2D(Vector2(radii.x,0),Vector2(0,radii.y),center),color)
 
+
+func _draw_particle_circle(center: Vector2,radius: float,color: Color) -> void:
+	if particle_mesh==null:
+		var points:=PackedVector2Array()
+		for i in range(64):points.append(Vector2.from_angle(float(i)/64.0*TAU))
+		var arrays:=[];arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX]=points;arrays[Mesh.ARRAY_INDEX]=Geometry2D.triangulate_polygon(points)
+		particle_mesh=ArrayMesh.new();particle_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
+	draw_mesh(particle_mesh,null,Transform2D(Vector2(radius,0),Vector2(0,radius),center),color)

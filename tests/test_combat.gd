@@ -34,6 +34,7 @@ func run(world_factory: Callable) -> Array[String]:
 	_v3_cover_intervals(world_factory)
 	_v3_wall_corner_consistency(world_factory)
 	_v3_ray_cache_lifecycle(world_factory)
+	_v3_cover_query_context(world_factory)
 	_v3_body_exemptions(world_factory)
 	_v3_query_and_styles(world_factory)
 	_v3_fire_control_and_preload(world_factory)
@@ -1099,6 +1100,7 @@ func _spatial_equivalence(factory: Callable) -> void:
 		reference.combat_system.use_ray_cache = false
 		reference.combat_system.use_ray_building_index = false
 		reference.combat_system.use_geometry_cache = false
+		reference.combat_system.use_low_muzzle_index = false
 		for frame in range(12):
 			if frame == 3:
 				indexed.combat_system.explode(indexed, Vector2(8.0, 4.0), scene % 2, 1)
@@ -1120,6 +1122,7 @@ func _spatial_equivalence(factory: Callable) -> void:
 	worlds[1].combat_system.use_ray_cache = false
 	worlds[1].combat_system.use_ray_building_index = false
 	worlds[1].combat_system.use_geometry_cache = false
+	worlds[1].combat_system.use_low_muzzle_index = false
 	for world in worlds:
 		world.spawn_wave(0)
 		world.spawn_wave(1)
@@ -1522,3 +1525,30 @@ func _v3_ray_cache_lifecycle(factory: Callable) -> void:
 	other.start_battle(); other.step()
 	_check(other.combat_system._static_world_id==int(other.get_instance_id()),"World.reset rebuilds cache topology without storing it in replay state")
 	print("COMBAT_V3_CACHE_LIFECYCLE hp_nonterminal_reuses=true attributes_invalidate=true same_pass_death=true world_reset=true")
+
+
+func _v3_cover_query_context(factory: Callable) -> void:
+	var random := RandomNumberGenerator.new()
+	random.seed = 639171
+	var count: int = 0
+	for scene in range(8):
+		var world = _equivalence_scene(factory,8210+scene)
+		var context: Dictionary = world.combat_system.cover_query_context(world)
+		for i in range(100):
+			var u: Dictionary = State.unit(79,0,Vector2(random.randf_range(-6,25),random.randf_range(-6,25)))
+			u.posture = i%3
+			u.cower = i%11==0
+			var source := Vector2(random.randf_range(-6,25),random.randf_range(-6,25))
+			var expected: Dictionary = world.combat_system.cover_for(world,u,source)
+			var actual: Dictionary = world.combat_system.cover_for_context(world,u,source,context)
+			_check(actual==expected,"Scoped cover context returns identical full result scene %d ray %d" % [scene,i])
+			var height: float = random.randf_range(.2,1.9)
+			world.combat_system.use_low_muzzle_index = false
+			var old_clear: bool = world.combat_system._low_muzzle_clear(world,source,Vector2(u.pos),height,-1,int(u.id))
+			world.combat_system.use_low_muzzle_index = true
+			world.combat_system._prepare_queries(world)
+			var new_clear: bool = world.combat_system._low_muzzle_clear(world,source,Vector2(u.pos),height,-1,int(u.id))
+			world.combat_system._queries_ready = false
+			_check(old_clear==new_clear,"Nearby muzzle query matches merged full ray scene %d ray %d" % [scene,i])
+			count+=1
+	print("COMBAT_V3_COVER_CONTEXT rays=%d exact_full_result=true low_muzzle_reference=true" % count)

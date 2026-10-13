@@ -17,7 +17,7 @@
 
 ## 原始证据的口径
 
-最终运行报告使用 `build/reports/v3_final_*.json`，包括 `input`、`benchmark`、`victory`、`motion`、`soak`、`soak-process`、`soak-memory-recheck`。每份报告必须明确记录最终PCK哈希；若原始外部输入脚本没有该字段，由运行包装流程在核对实际命令、前后PCK哈希后记录绑定，不可据文件名猜测版本。
+最终运行报告使用 `build/reports/v3_final_*.json`，包括 `input`、`benchmark`、`victory`、`motion`、`soak`、`soak-process`、`soak-memory-recheck`。每份报告必须明确记录最终PCK哈希。正式模板禁止外部路径/脚本覆盖，所以本版输入检查内置于PCK，通过显式QA参数启用；检查自己报告相邻PCK哈希，包装工具另保存运行参数、原始报告哈希和进程退出码，不改变断言结果。
 
 - 输入证据采用实际Viewport鼠标按下/松开/拖动、键盘、菜单与Alt事件，覆盖暂停落点、队形、连续右键和HUD不穿透。专用敌人/伤势/岗位夹具只用于暴露UI状态。
 - 性能证据必须是最终Windows程序的至少65秒实时采样，记录CPU/GPU、逻辑/窗口/渲染分辨率及负载；门槛为平均至少60FPS、P95不高于33.3ms。离线录像的帧率不算实时性能。
@@ -39,9 +39,8 @@ $pck = Join-Path $release 'Rimgate.pck'
 $reports = Join-Path (Get-Location) 'build/recheck-v3'
 New-Item -ItemType Directory -Force -Path $reports | Out-Null
 ./tools/test.ps1 -Godot $godot
-# 外部UI检查脚本，产品脚本/资源仍从这个PCK加载。
-$inputScript = (Resolve-Path tests/input_v3.gd).Path
-& $godot --main-pack $pck --script $inputScript -- "--report=$reports/input.json" "--capture=$reports/ui"
+# 原生发布程序中的同一Viewport检查；不使用外部脚本覆盖。
+& $game -- --qa-mode=input_v3 "--report=$reports/input.json" "--capture=$reports/ui"
 & $game --resolution 1920x1080 -- --qa-mode=benchmark "--qa-report=$reports/benchmark.json"
 & $game --resolution 1920x1080 -- --qa-mode=victory "--qa-report=$reports/victory.json"
 ./tools/soak.ps1 -Executable $game -ReportPrefix "$reports/soak"
@@ -50,7 +49,7 @@ $inputScript = (Resolve-Path tests/input_v3.gd).Path
 python tools/verify_release.py --version 0.3.0
 ```
 
-外部UI脚本的报告绑定应保存实际PCK路径、运行命令和前后哈希；未完成这一绑定的重跑报告不能作为通用包校验器的正式输入。正式清单中的哈希可直接读取，不在本说明里维护第二份手填值：
+`tools/run_v3_input.ps1`保存输入检查的原始断言和运行绑定；单独重跑时也应保存实际命令及前后PCK哈希。正式清单中的哈希可直接读取，不在本说明里维护第二份手填值：
 
 ```powershell
 Get-Content build/Rimgate-demo-v0.3.0-manifest.json -Raw | ConvertFrom-Json |

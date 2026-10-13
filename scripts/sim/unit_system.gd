@@ -11,6 +11,12 @@ var reserved_edges: Dictionary = {}
 var use_placement_cache := true
 var _placement_scope := false
 var _placement_blockers: Dictionary = {}
+# Pure lookups are scoped to a single update or stationary candidate scan.
+# They never survive combat/destruction or another unit's movement.
+var use_update_query_cache := true
+var use_escape_query_cache := true
+var _stand_scope := false
+var _stand_cache: Dictionary = {}
 const INVALID_CELL := Vector2i(-1, -1)
 const INTERACTION_DISTANCE := 1.01
 const SETTINGS := ["posture", "style", "fire_control", "target_policy"]
@@ -147,8 +153,12 @@ func _inside(p: Vector2) -> bool:
 
 func _can_stand(world, p: Vector2) -> bool:
 	if not _inside(p): return false
-	var building: Dictionary = world.building_at(_cell(p))
-	return building.is_empty() or _barrier_type(building) == "floor"
+	var cell := _cell(p)
+	if _stand_scope and _stand_cache.has(cell): return bool(_stand_cache[cell])
+	var building: Dictionary = world.building_at(cell)
+	var result: bool = building.is_empty() or _barrier_type(building) == "floor"
+	if _stand_scope: _stand_cache[cell] = result
+	return result
 
 func _can_walk(world, p: Vector2) -> bool:
 	if not _inside(p): return false
@@ -823,6 +833,7 @@ func _publish_action_stage(world, u: Dictionary) -> void:
 	world.emit_event("unit_action_stage", {"unit_id": int(u.id), "entity_id": int(u.id), "pos": Vector2(u.pos), "team": int(u.team), "job": String(u.job), "stage": String(u.stage), "previous_job": old_job, "previous_stage": old_stage, "target_id": int(u.rescued_id), "station_id": int(u.station_id)})
 
 func update(world, dt: float) -> void:
+	_stand_cache.clear(); _stand_scope = use_update_query_cache
 	_refresh_traffic(world)
 	var ordered: Array = world.units.duplicate()
 	ordered.sort_custom(func(a, b): return int(a.id) < int(b.id))
@@ -874,6 +885,8 @@ func update(world, dt: float) -> void:
 		if int(u.carrier_id) >= 0:
 			var carrier: Dictionary = world.entity(int(u.carrier_id))
 			if not carrier.is_empty(): u.pos = carrier.pos; u.velocity = carrier.velocity
+
+	_stand_scope = false; _stand_cache.clear()
 
 func finalize(world) -> void:
 	for u in world.units:
@@ -985,6 +998,14 @@ func _start_rout(world, u: Dictionary) -> void:
 	world.emit_event("unit_state_changed", {"unit_id": u.id, "state": "routed", "until": u.rout_until, "pressure_level": 4, "pos": Vector2(u.pos)})
 
 func _escape_goal(world, u: Dictionary) -> Vector2:
+	var previous_stand_scope := _stand_scope
+	var previous_placement_scope := _placement_scope
+	if use_escape_query_cache:
+		if not _stand_scope: _stand_cache.clear(); _stand_scope = true
+		if use_placement_cache and not _placement_scope: _fill_placement_cache(world); _placement_scope = true
+	var chances: Dictionary = {}
+	var context: Dictionary = world.combat_system.cover_query_context(world) if use_escape_query_cache else {}
+	var copy := u.duplicate(); copy.posture = 0
 	var threat := _nearest_opponent(world, u)
 	var incoming: Vector2 = Vector2(u.get("threat_origin", threat.get("pos", Vector2(u.pos) + Vector2.UP * 20.0)))
 	var choices: Array[Vector2] = []
@@ -1003,18 +1024,26 @@ func _escape_goal(world, u: Dictionary) -> Vector2:
 		if path.is_empty(): continue
 		var length := 0.0; var previous: Vector2 = u.pos
 		for waypoint in path: length += previous.distance_to(waypoint); previous = waypoint
-		var copy := u.duplicate(); copy.posture = 0; copy.pos = point
-		var cover: Dictionary = world.cover_for(copy, incoming)
+		var protection: float = _escape_protection(world, copy, incoming, point, chances, context)
 		var exposure := 0.0
 		for fraction in [0.25, 0.5, 0.75]:
 			var index := mini(path.size() - 1, floori(float(path.size()) * fraction))
-			copy.pos = path[index]
-			exposure += 1.0 - float(world.cover_for(copy, incoming).get("chance", 0.0))
+			exposure += 1.0 - _escape_protection(world, copy, incoming, path[index], chances, context)
 		var safe_bonus := 0.2 if C.MEDICAL_RECT.has_point(point) else 0.0
-		var risk := (1.0 - float(cover.get("chance", 0.0))) * 2.0 + exposure / 3.0 - safe_bonus
+		var risk := (1.0 - protection) * 2.0 + exposure / 3.0 - safe_bonus
 		if risk < best_risk - 0.000001 or (absf(risk - best_risk) <= 0.000001 and length < best_length - 0.000001):
 			best = point; best_risk = risk; best_length = length
+	if not previous_stand_scope: _stand_scope = false; _stand_cache.clear()
+	if not previous_placement_scope: _placement_scope = false; _placement_blockers.clear()
 	return best if best != Vector2.INF else _center(u.pos)
+
+func _escape_protection(world, copy: Dictionary, incoming: Vector2, point: Vector2, chances: Dictionary, context: Dictionary) -> float:
+	if use_escape_query_cache and chances.has(point): return float(chances[point])
+	copy.pos = point
+	var cover: Dictionary = world.combat_system.cover_for_context(world, copy, incoming, context) if use_escape_query_cache else world.cover_for(copy, incoming)
+	var result: float = float(cover.get("chance", 0.0))
+	if use_escape_query_cache: chances[point] = result
+	return result
 
 func _standby_ai(world, u: Dictionary) -> void:
 	if world.time_s < float(u.rout_until): return
@@ -1238,25 +1267,27 @@ func _nearest_opponent(world, u: Dictionary) -> Dictionary:
 		if d < best: result = target; best = d
 	return result
 
+func _fill_placement_cache(world) -> void:
+	_placement_blockers.clear()
+	for other in world.units:
+		if int(other.carrier_id) >= 0: continue
+		_placement_add(_cell(other.pos), int(other.id))
+		if not _active(other): continue
+		if bool(other.get("move_active", false)):
+			_placement_add(Vector2i(other.move_from), int(other.id))
+			_placement_add(Vector2i(other.move_to), int(other.id))
+		if not other.path.is_empty(): _placement_add(_cell(other.goal), int(other.id))
+		if int(other.station_id) >= 0:
+			var station: Dictionary = world.entity(int(other.station_id))
+			if not station.is_empty():
+				var seat: int = maxi(0, int(other.get("station_seat", 0)))
+				_placement_add(_cell(station.crew_points[mini(seat, station.crew_points.size() - 1)]), int(other.id))
+	for slot in world.medical_reservations:
+		_placement_add(_cell(world.medical_slots[int(slot)]), int(world.medical_reservations[slot]))
+
 func _enemy_ai(world, u: Dictionary) -> void:
 	if use_placement_cache:
-		_placement_blockers.clear()
-		for other in world.units:
-			if int(other.carrier_id) >= 0: continue
-			_placement_add(_cell(other.pos), int(other.id))
-			if not _active(other): continue
-			if bool(other.get("move_active", false)):
-				_placement_add(Vector2i(other.move_from), int(other.id))
-				_placement_add(Vector2i(other.move_to), int(other.id))
-			if not other.path.is_empty(): _placement_add(_cell(other.goal), int(other.id))
-			if int(other.station_id) >= 0:
-				var station: Dictionary = world.entity(int(other.station_id))
-				if not station.is_empty():
-					var seat: int = maxi(0, int(other.get("station_seat", 0)))
-					_placement_add(_cell(station.crew_points[mini(seat, station.crew_points.size() - 1)]), int(other.id))
-		for slot in world.medical_reservations:
-			_placement_add(_cell(world.medical_slots[int(slot)]), int(world.medical_reservations[slot]))
-		_placement_scope = true
+		_fill_placement_cache(world); _placement_scope = true
 	_enemy_ai_live(world, u)
 	_placement_scope = false
 	_placement_blockers.clear()
@@ -1352,10 +1383,13 @@ func _structure_fire_position(world, u: Dictionary, target: Dictionary) -> Vecto
 		for y in range(rect.position.y - ring, rect.end.y + ring):
 			for x in range(rect.position.x - ring, rect.end.x + ring):
 				var point := Vector2(x + 0.5, y + 0.5)
-				if not _destination_free(world, point, [int(u.id)]) or point.distance_to(target.pos) > 24.0: continue
-				var copy := u.duplicate(); copy.pos = point
 				var cost: float = u.pos.distance_squared_to(point)
-				if cost < distance and _reachable(u.pos, point) and _standing_line(world, copy, target): best = point; distance = cost
+				# Preserve candidate order and strict tie rule, but skip expensive
+				# pure queries for candidates that cannot improve the same result.
+				if not cost < distance or point.distance_to(target.pos) > 24.0: continue
+				if not _destination_free(world, point, [int(u.id)]) or not _reachable(u.pos, point): continue
+				var copy := u.duplicate(); copy.pos = point
+				if _standing_line(world, copy, target): best = point; distance = cost
 	return best
 
 func _ai_move(world, u: Dictionary, destination: Vector2) -> void:

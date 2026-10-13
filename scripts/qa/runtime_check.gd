@@ -48,6 +48,12 @@ func setup(target) -> void:
 		ammo_baseline = _ammo_total()
 	elif mode == "input":
 		call_deferred("_input_check")
+	elif mode == "input_v3":
+		# Release templates forbid external --script/--main-pack overrides.
+		# Keep the actual Viewport input harness opt-in inside this tested PCK.
+		var runner = load("res://scripts/qa/input_v3_check.gd").new()
+		get_tree().root.add_child(runner)
+		runner.setup(screen)
 	elif mode == "interaction":
 		duration = 180.0
 		var runner = load("res://scripts/qa/interaction_check.gd").new()
@@ -140,7 +146,7 @@ func _physics_process(_dt: float) -> void:
 	if mode == "benchmark" and benchmark_ready: _fill_stress()
 
 func _process(_dt: float) -> void:
-	if screen == null or mode == "input": return
+	if screen == null or mode in ["input", "input_v3"]: return
 	var now := Time.get_ticks_usec()
 	var elapsed := (now - started_usec) / 1000000.0
 	if mode == "interaction":

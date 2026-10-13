@@ -24,6 +24,7 @@ var bodies: Dictionary = {}
 var garments: Dictionary = {}
 var visual_loadouts: Dictionary = {}
 var head_history: Dictionary = {}
+var rig_meshes: Dictionary = {}
 var ready := false
 
 func setup() -> void:
@@ -171,14 +172,27 @@ func _rig_width(rig: int,y: float) -> float:
 func _rigged(canvas: CanvasItem,texture: Texture2D,rect: Rect2,source: Rect2,tint: Color,rig: int,y_from: float=0,y_range: float=1) -> void:
     # A five-anchor shoulder/waist/hip/leg rig changes the contour locally.
     # Garments share these anchors; this is not a uniform x-scale body variant.
-    var tex_size:=texture.get_size()
-    for strip in range(4):
-        var a:=float(strip)/4;var b:=float(strip+1)/4
-        var wa:=rect.size.x*_rig_width(rig,y_from+a*y_range)*.5;var wb:=rect.size.x*_rig_width(rig,y_from+b*y_range)*.5
-        var center:=rect.position.x+rect.size.x*.5
-        var points:=PackedVector2Array([Vector2(center-wa,rect.position.y+rect.size.y*a),Vector2(center+wa,rect.position.y+rect.size.y*a),Vector2(center+wb,rect.position.y+rect.size.y*b),Vector2(center-wb,rect.position.y+rect.size.y*b)])
-        var uv:=PackedVector2Array([source.position/tex_size+Vector2(0,source.size.y*a)/tex_size,(source.position+Vector2(source.size.x,source.size.y*a))/tex_size,(source.position+Vector2(source.size.x,source.size.y*b))/tex_size,(source.position+Vector2(0,source.size.y*b))/tex_size])
-        canvas.draw_polygon(points,PackedColorArray([tint]),uv,texture)
+    # The same four strips share an immutable indexed mesh. Changing clothes
+    # still chooses a separate layer; this caches geometry, never an outfit.
+    var key: Array=[texture.get_rid(),source,rig,y_from,y_range]
+    if not rig_meshes.has(key):
+        var vertices:=PackedVector2Array();var uv:=PackedVector2Array();var indices:=PackedInt32Array()
+        var tex_size:=texture.get_size()
+        for row in range(5):
+            var y:=float(row)/4.0;var half_width:=_rig_width(rig,y_from+y*y_range)*.5
+            vertices.append(Vector2(.5-half_width,y));vertices.append(Vector2(.5+half_width,y))
+            uv.append((source.position+Vector2(0,source.size.y*y))/tex_size)
+            uv.append((source.position+Vector2(source.size.x,source.size.y*y))/tex_size)
+        for strip in range(4):
+            var i:=strip*2
+            # Match Geometry2D's original quad triangulation, including the
+            # diagonal used for UV interpolation across a tapered strip.
+            indices.append_array(PackedInt32Array([i+2,i,i+1,i+1,i+3,i+2]))
+        var arrays:=[];arrays.resize(Mesh.ARRAY_MAX)
+        arrays[Mesh.ARRAY_VERTEX]=vertices;arrays[Mesh.ARRAY_TEX_UV]=uv;arrays[Mesh.ARRAY_INDEX]=indices
+        var mesh:=ArrayMesh.new();mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
+        rig_meshes[key]=mesh
+    canvas.draw_mesh(rig_meshes[key],texture,Transform2D(Vector2(rect.size.x,0),Vector2(0,rect.size.y),rect.position),tint)
 
 func _draw_enemy(canvas: CanvasItem,unit: Dictionary,point: Vector2,direction: int,posture: int,down: bool,cower: bool,tint: Color,weapon_layer: Callable,clock: float) -> void:
     var kind:=String(unit.kind)

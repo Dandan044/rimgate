@@ -15,6 +15,7 @@ const QUERY_PADDING := 0.001
 const SEGMENT_TOLERANCE := 0.0001
 const FRIENDLY_LOCAL_RADIUS := 1.4142135623730951
 const IDLE_RELOAD_DELAY := 1.5
+const NO_CANDIDATES: Array = []
 
 # The exhaustive path remains available for deterministic equivalence checks.
 var use_spatial_index: bool = true
@@ -23,6 +24,7 @@ var use_spatial_index: bool = true
 var use_ray_cache: bool = true
 var use_ray_building_index: bool = true
 var use_geometry_cache: bool = true
+var use_low_muzzle_index: bool = true
 var _geometry_cache: Dictionary = {}
 var _rifle_query_reach: float = float(Config.rifle().range)+1.0
 var _ray_cache: Dictionary = {}
@@ -36,8 +38,11 @@ var _ray_cache_misses: int = 0
 var _queries_ready: bool = false
 var _building_grid: Dictionary = {}
 var _wall_grid: Dictionary = {}
+var _wall_bounds: Rect2 = Rect2()
+var _has_walls: bool = false
 var _static_building_ids: Dictionary = {}
 var _unit_grid: Dictionary = {}
+var _building_index_revision: int = -1
 var _query_buildings: Array = []
 var _query_units: Array = []
 var _building_marks: PackedInt32Array = PackedInt32Array()
@@ -78,10 +83,32 @@ func hit_probability(shooter: Dictionary, target: Dictionary, weapon: Dictionary
 
 
 func cover_for(world, unit: Dictionary, from: Vector2) -> Dictionary:
+	return _cover_result(unit, _cover_segments(world, from, Vector2(unit.pos), -1, int(unit.id)))
+
+
+# A synchronous read-only query batch, used by escape-goal scoring. The caller
+# must discard it before changing buildings; live HP checks still occur for
+# every ray. It does not enable or reuse the dynamic projectile/unit index.
+func cover_query_context(world) -> Dictionary:
+	var buildings: Array = world.buildings.duplicate()
+	var grid: Dictionary = {}
+	if use_spatial_index and use_ray_building_index:
+		for index in range(buildings.size()):
+			var building: Dictionary = buildings[index]
+			if _building_alive(building) and _barrier_type(building) != "floor":
+				_index_bounds(grid, Rect2(building.rect).grow(QUERY_PADDING), index)
+	return {"buildings": buildings, "grid": grid, "indexed": use_spatial_index and use_ray_building_index}
+
+
+func cover_for_context(world, unit: Dictionary, from: Vector2, context: Dictionary) -> Dictionary:
+	var buildings: Array = _context_ray_buildings(context, from, Vector2(unit.pos))
+	return _cover_result(unit, _cover_segments_from_candidates(from, Vector2(unit.pos), buildings, -1, int(unit.id)))
+
+
+func _cover_result(unit: Dictionary, obstacles: Array[Dictionary]) -> Dictionary:
 	var result: Dictionary = {"chance": 0.0, "blocked": false, "building_id": -1, "cell": Vector2i(-1, -1), "obstacles": []}
 	var survival: float = 1.0
 	var volume: float = _volume(unit)
-	var obstacles: Array[Dictionary] = _cover_segments(world, from, Vector2(unit.pos), -1, int(unit.id))
 	for obstacle in obstacles:
 		obstacle["chance"] = 1.0 if bool(obstacle.blocked) else cover_probability(obstacle.entity, volume, float(obstacle.entry_distance))
 		survival *= 1.0 - float(obstacle.chance)
@@ -96,18 +123,25 @@ func cover_for(world, unit: Dictionary, from: Vector2) -> Dictionary:
 
 # Intervals follow the actual ray, not the connected building group.
 func _cover_segments(world, start: Vector2, end: Vector2, excluded_id: int = -1, target_id: int = -1) -> Array[Dictionary]:
+	return _cover_segments_from_candidates(start, end, _ray_buildings(world,start,end), excluded_id, target_id)
+
+
+func _cover_segments_from_candidates(start: Vector2, end: Vector2, candidates: Array, excluded_id: int = -1, target_id: int = -1) -> Array[Dictionary]:
 	var pieces: Array[Dictionary] = []
 	var length: float = start.distance_to(end)
 	if length <= EPS: return pieces
-	for building in _ray_buildings(world,start,end):
+	for building in candidates:
 		if not _building_alive(building) or _barrier_type(building) == "floor" or int(building.id) in [excluded_id, target_id]: continue
 		var rect: Rect2i = building.rect
-		var signature: String = _cover_signature(building)
+		var outer: Vector2 = _segment_rect_interval(start,end,Rect2(rect))
+		if outer.x < 0.0: continue
+		var signature: String = ""
 		var wall: bool = _barrier_type(building)=="wall"
 		for y in range(rect.position.y, rect.end.y):
 			for x in range(rect.position.x, rect.end.x):
-				var interval: Vector2 = _segment_rect_interval(start, end, Rect2(x, y, 1.0, 1.0))
+				var interval: Vector2 = outer if rect.size == Vector2i.ONE else _segment_rect_interval(start, end, Rect2(x, y, 1.0, 1.0))
 				if not _positive_crossing(start,end,interval): continue
+				if signature.is_empty(): signature = _cover_signature(building)
 				pieces.append({"t": interval.x, "exit_t": interval.y, "entry_distance": interval.x * length, "exit_distance": interval.y * length, "building_id": int(building.id), "entity": building, "cell": Vector2i(x,y), "blocked": wall, "signature": signature, "members": [int(building.id)]})
 	pieces.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return int(a.building_id) < int(b.building_id) if absf(float(a.t)-float(b.t)) <= EPS else float(a.t) < float(b.t)
@@ -132,8 +166,8 @@ func _projectile_cover_segments(world, projectile: Dictionary, start: Vector2, e
 	var target: int = int(projectile.target_id)
 	if not use_ray_cache: return _cover_segments(world,start,end,excluded,target)
 	var id: int = int(projectile.id)
-	var previous: Dictionary = _ray_cache.get(id,{})
-	if not previous.is_empty() and int(previous.revision)==_static_revision and previous.start==start and previous.end==end and int(previous.excluded)==excluded and int(previous.target)==target:
+	var previous = _ray_cache.get(id)
+	if previous != null and int(previous.revision)==_static_revision and previous.start==start and previous.end==end and int(previous.excluded)==excluded and int(previous.target)==target:
 		_ray_cache_hits+=1
 		return previous.segments
 	_ray_cache_misses+=1
@@ -211,8 +245,49 @@ func _ray_buildings(world, start: Vector2, end: Vector2) -> Array:
 	return result
 
 
+func _context_ray_buildings(context: Dictionary, start: Vector2, end: Vector2) -> Array:
+	if not bool(context.indexed): return context.buildings
+	var seen: Dictionary = {}
+	var point: Vector2 = start/QUERY_CELL_SIZE
+	var finish: Vector2 = end/QUERY_CELL_SIZE
+	var cell: Vector2i = Vector2i(point.floor())
+	var last: Vector2i = Vector2i(finish.floor())
+	var delta: Vector2 = finish-point
+	var step_x: int = 1 if delta.x>0.0 else -1 if delta.x<0.0 else 0
+	var step_y: int = 1 if delta.y>0.0 else -1 if delta.y<0.0 else 0
+	var next_x: float = (float(cell.x+(1 if step_x>0 else 0))-point.x)/delta.x if step_x!=0 else INF
+	var next_y: float = (float(cell.y+(1 if step_y>0 else 0))-point.y)/delta.y if step_y!=0 else INF
+	var stride_x: float = absf(1.0/delta.x) if step_x!=0 else INF
+	var stride_y: float = absf(1.0/delta.y) if step_y!=0 else INF
+	var indices: Array[int] = []
+	var budget: int = absi(last.x-cell.x)+absi(last.y-cell.y)+3
+	for iteration in range(budget):
+		_collect_context_bucket(context,cell,indices,seen)
+		if cell==last: break
+		if next_x<next_y:
+			cell.x+=step_x; next_x+=stride_x
+		elif next_y<next_x:
+			cell.y+=step_y; next_y+=stride_y
+		else:
+			_collect_context_bucket(context,cell+Vector2i(step_x,0),indices,seen)
+			_collect_context_bucket(context,cell+Vector2i(0,step_y),indices,seen)
+			cell+=Vector2i(step_x,step_y); next_x+=stride_x; next_y+=stride_y
+	indices.sort()
+	var result: Array = []
+	for index in indices: result.append(context.buildings[index])
+	return result
+
+
+
+func _collect_context_bucket(context: Dictionary, cell: Vector2i, indices: Array[int], seen: Dictionary) -> void:
+	for index in context.grid.get(cell,NO_CANDIDATES):
+		if seen.has(index): continue
+		seen[index] = true
+		indices.append(index)
+
+
 func _collect_ray_bucket(cell: Vector2i, indices: Array[int]) -> void:
-	for index in _building_grid.get(cell,[]):
+	for index in _building_grid.get(cell,NO_CANDIDATES):
 		if _building_marks[index]==_query_serial: continue
 		_building_marks[index]=_query_serial
 		indices.append(index)
@@ -244,7 +319,10 @@ func cover_probability(building: Dictionary, target_volume: float, shooter_dista
 
 
 func _barrier_type(building: Dictionary) -> String:
-	return String(building.get("barrier_type", "wall" if bool(building.get("high", false)) else ("floor" if float(building.get("height", 0.0)) < 0.1 else "cover")))
+	# Dictionary.get evaluates its default eagerly. Most live assets carry the
+	# explicit type, so avoid calculating the compatibility fallback per ray.
+	if building.has("barrier_type"): return String(building.barrier_type)
+	return "wall" if bool(building.get("high", false)) else ("floor" if float(building.get("height", 0.0)) < 0.1 else "cover")
 
 
 func _building_crossing(building: Dictionary, start: Vector2, end: Vector2) -> Dictionary:
@@ -334,10 +412,32 @@ func _can_fire_pose_uncached(world, shooter: Dictionary, target: Dictionary, sta
 	source.pos = muzzle
 	if not has_line_of_fire(world,source,target): return {"ok":false,"reason":"墙体阻挡射线"}
 	var muzzle_height: float = float(pose.get("muzzle_height",1.5 if not station.is_empty() else float(Config.HEIGHTS[posture])*.8))
-	for segment in _cover_segments(world,muzzle,Vector2(target.pos),int(station.get("id",-1)),int(target.id)):
-		if not bool(segment.blocked) and float(segment.entry_distance) <= 1.0+SEGMENT_TOLERANCE and float(segment.entity.get("height",0.0)) >= muzzle_height-EPS:
-			return {"ok":false,"reason":"低掩体高于当前枪口，无法出射"}
+	if not _low_muzzle_clear(world,muzzle,Vector2(target.pos),muzzle_height,int(station.get("id",-1)),int(target.id)):
+		return {"ok":false,"reason":"低掩体高于当前枪口，无法出射"}
 	return {"ok":true,"reason":""}
+
+
+# Only the first grid of low cover can prevent the barrel from emerging.
+# Interval merging cannot change this boolean: a merged group retains the
+# same height/type and its earliest cell entry. Keep the original full ray
+# for every slab/tolerance calculation, but collect only nearby candidates.
+func _low_muzzle_clear(world, muzzle: Vector2, target: Vector2, height: float, excluded_id: int, target_id: int) -> bool:
+	if not use_low_muzzle_index:
+		for segment in _cover_segments(world,muzzle,target,excluded_id,target_id):
+			if not bool(segment.blocked) and float(segment.entry_distance)<=1.0+SEGMENT_TOLERANCE and float(segment.entity.get("height",0.0))>=height-EPS: return false
+		return true
+	var offset: Vector2 = target-muzzle
+	var length: float = offset.length()
+	if length <= EPS: return true
+	var nearby_end: Vector2 = muzzle+offset.normalized()*minf(length,2.0+SEGMENT_TOLERANCE)
+	for building in _buildings_in_bounds(world,_segment_bounds(muzzle,nearby_end)):
+		if not _building_alive(building) or _barrier_type(building) in ["wall","floor"] or int(building.id) in [excluded_id,target_id] or float(building.get("height",0.0))<height-EPS: continue
+		var rect: Rect2i = building.rect
+		for y in range(rect.position.y,rect.end.y):
+			for x in range(rect.position.x,rect.end.x):
+				var interval: Vector2 = _segment_rect_interval(muzzle,target,Rect2(x,y,1.0,1.0))
+				if _positive_crossing(muzzle,target,interval) and interval.x*length<=1.0+SEGMENT_TOLERANCE: return false
+	return true
 
 
 func query_shot(world, holder_id: int, target_id: int, posture_override: int = -1) -> Dictionary:
@@ -489,7 +589,7 @@ func spawn_direct_projectile(world, shooter: Dictionary, target: Dictionary, wea
 
 func _muzzle_clear(world, base: Vector2, muzzle: Vector2) -> bool:
 	for building in _walls_in_bounds(world,_segment_bounds(base,muzzle)):
-		if not _building_alive(building) or _barrier_type(building) != "wall": continue
+		if _barrier_type(building) != "wall" or not _building_alive(building): continue
 		var rect: Rect2 = Rect2(building.rect)
 		if _point_inside_rect(base,rect) or _point_inside_rect(muzzle,rect) or _positive_crossing(base,muzzle,_segment_rect_interval(base,muzzle,rect)):
 			return false
@@ -988,21 +1088,27 @@ func _advance_shell(world, p: Dictionary, dt: float) -> bool:
 
 func _advance_direct(world, p: Dictionary, dt: float) -> bool:
 	var origin: Vector2 = p.pos
-	var step_distance: float = float(p.speed) * dt
-	var distance: float = minf(step_distance, float(p.remaining))
-	var destination: Vector2 = origin + Vector2(p.dir) * distance
+	var speed: float = p.speed
+	var remaining: float = p.remaining
+	var travelled: float = p.travelled
+	var direction: Vector2 = p.dir
+	var kind: String = p.kind
+	var shooter_id: int = p.shooter_id
+	var step_distance: float = speed * dt
+	var distance: float = minf(step_distance, remaining)
+	var destination: Vector2 = origin + direction * distance
 	p.prev_pos = origin
 	var collisions: Array[Dictionary] = []
 	var bounds: Rect2 = _segment_bounds(origin, destination)
 	for u in _units_in_bounds(world, bounds):
-		if bool(u.dead) or float(u.hp) <= 0.0 or (p.kind != "fragment" and int(u.id) == int(p.shooter_id)): continue
+		if bool(u.dead) or float(u.hp) <= 0.0 or (kind != "fragment" and int(u.id) == shooter_id): continue
 		var t: float = _moving_circle_hit(origin, destination, Vector2(u.prev_pos), Vector2(u.pos), _radius(u))
 		if t >= 0.0 and not _body_exempt(p, u, origin.lerp(destination,t),Vector2(u.prev_pos).lerp(Vector2(u.pos),t)):
 			collisions.append({"t": t, "priority": 1, "kind": "unit", "entity": u, "id": int(u.id)})
 	if bool(p.get("prefix_pending", false)):
 		var prefix: Vector2 = p.get("prefix_start", origin)
 		for u in _units_in_bounds(world,_segment_bounds(prefix,Vector2(p.start))):
-			if bool(u.dead) or float(u.hp) <= 0.0 or int(u.id) == int(p.shooter_id): continue
+			if bool(u.dead) or float(u.hp) <= 0.0 or int(u.id) == shooter_id: continue
 			var t: float = _moving_circle_hit(prefix, Vector2(p.start), Vector2(u.pos), Vector2(u.pos), _radius(u))
 			if t >= 0.0 and not _body_exempt(p, u, prefix.lerp(Vector2(p.start),t)):
 				collisions.append({"t": -1.0+t*.999, "point":prefix.lerp(Vector2(p.start),t), "priority":1, "kind":"unit", "entity":u, "id":int(u.id)})
@@ -1013,21 +1119,22 @@ func _advance_direct(world, p: Dictionary, dt: float) -> bool:
 			var interval: Vector2 = _segment_rect_interval(origin, destination, Rect2(b.rect))
 			if _positive_crossing(origin,destination,interval) or _point_inside_rect(origin,Rect2(b.rect)):
 				collisions.append({"t": interval.x, "priority": 0, "kind": "building", "entity": b, "id": int(b.id)})
-	var full_start: Vector2 = p.get("start", origin-Vector2(p.dir)*float(p.travelled))
-	var full_end: Vector2 = full_start+Vector2(p.dir)*(float(p.travelled)+float(p.remaining))
+	var full_start: Vector2 = p.start if p.has("start") else origin-direction*travelled
+	var full_end: Vector2 = full_start+direction*(travelled+remaining)
 	for segment in _projectile_cover_segments(world,p,full_start,full_end):
 		if bool(segment.blocked): continue
-		if float(segment.exit_distance) < float(p.travelled)-SEGMENT_TOLERANCE or float(segment.entry_distance) > float(p.travelled)+distance+EPS: continue
+		if float(segment.exit_distance) < travelled-SEGMENT_TOLERANCE or float(segment.entry_distance) > travelled+distance+EPS: continue
 		if _segment_checked(p,segment): continue
-		var t: float = clampf((float(segment.entry_distance)-float(p.travelled))/maxf(EPS,distance),0.0,1.0)
+		var t: float = clampf((float(segment.entry_distance)-travelled)/maxf(EPS,distance),0.0,1.0)
 		collisions.append({"t": t, "priority": 0, "kind": "low", "entity": segment.entity, "id": int(segment.building_id), "cell": segment.cell, "segment":segment})
-	collisions.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		if absf(float(a.t) - float(b.t)) > EPS:
-			return float(a.t) < float(b.t)
-		if int(a.priority) != int(b.priority):
-			return int(a.priority) < int(b.priority)
-		return int(a.id) < int(b.id)
-	)
+	if collisions.size()>1:
+		collisions.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			if absf(float(a.t) - float(b.t)) > EPS:
+				return float(a.t) < float(b.t)
+			if int(a.priority) != int(b.priority):
+				return int(a.priority) < int(b.priority)
+			return int(a.id) < int(b.id)
+		)
 	for collision in collisions:
 		var victim: Dictionary = collision.entity
 		var t: float = float(collision.t)
@@ -1051,16 +1158,18 @@ func _advance_direct(world, p: Dictionary, dt: float) -> bool:
 		_suppress_along(world, p, origin, impact_position, clampf(t,0.0,1.0))
 		var material: String = ("armor" if armor_absorbed else "unit") if collision.kind == "unit" else String(victim.get("material", {"sandbag": "sandbag", "crate": "wood", "wall": "concrete", "core": "concrete"}.get(String(victim.kind), "metal")))
 		world.emit_event("projectile_impact", {"entity_id": int(victim.id), "shooter_id": int(p.shooter_id), "projectile_id": int(p.id), "pos": impact_position, "team": int(p.team), "weapon_kind": String(p.kind), "material": material, "armor_absorbed": armor_absorbed, "blocked_by_cover": collision.kind == "low"})
-		_record_finished(world, p, distance * maxf(0.0,t) / step_distance if step_distance > 0.0 else 0.0, float(p.travelled) / float(p.speed), (float(p.travelled) + distance * maxf(0.0,t)) / float(p.speed), "impact")
+		_record_finished(world, p, distance * maxf(0.0,t) / step_distance if step_distance > 0.0 else 0.0, travelled / speed, (travelled + distance * maxf(0.0,t)) / speed, "impact")
 		return false
 	p.pos = destination
-	p.remaining = maxf(0.0, float(p.remaining) - distance)
-	p.travelled = float(p.travelled) + distance
-	p.life = maxf(0.0, float(p.remaining) / float(p.speed))
+	remaining = maxf(0.0, remaining - distance)
+	travelled = travelled + distance
+	p.remaining = remaining
+	p.travelled = travelled
+	p.life = maxf(0.0, remaining / speed)
 	_suppress_along(world, p, origin, destination, 1.0)
-	if float(p.remaining) <= EPS:
-		_record_finished(world, p, distance / step_distance if step_distance > 0.0 else 0.0, (float(p.travelled) - distance) / float(p.speed), float(p.travelled) / float(p.speed), "range")
-	return float(p.remaining) > EPS
+	if remaining <= EPS:
+		_record_finished(world, p, distance / step_distance if step_distance > 0.0 else 0.0, (travelled - distance) / speed, travelled / speed, "range")
+	return remaining > EPS
 
 
 func _record_finished(world, p: Dictionary, fraction: float, previous_age: float, age: float, reason: String) -> void:
@@ -1069,23 +1178,27 @@ func _record_finished(world, p: Dictionary, fraction: float, previous_age: float
 
 
 func _forward_victim(world, p: Dictionary, origin: Vector2, step_end: Vector2, entry_t: float) -> Dictionary:
-	var end: Vector2 = origin + Vector2(p.dir) * float(p.remaining)
+	var remaining: float = p.remaining
+	var end: Vector2 = origin + Vector2(p.dir) * remaining
 	var best: Dictionary = {}
 	var best_distance: float = INF
-	var entry_distance: float = origin.distance_to(step_end) * entry_t
+	var step_distance: float = origin.distance_to(step_end)
+	var entry_distance: float = step_distance * entry_t
+	var fragment: bool = p.kind == "fragment"
+	var shooter_id: int = p.shooter_id
 	for u in world.units:
-		if bool(u.dead) or float(u.hp) <= 0.0 or (p.kind != "fragment" and int(u.id) == int(p.shooter_id)):
-			continue
+		if bool(u.dead) or float(u.hp) <= 0.0 or (not fragment and int(u.id) == shooter_id): continue
 		var radius: float = _radius(u)
-		var t: float = _moving_circle_hit(origin, end, Vector2(u.pos), Vector2(u.pos), radius)
-		var distance: float = t * float(p.remaining) if t >= 0.0 else INF
+		var unit_position: Vector2 = u.pos
+		var unit_previous: Vector2 = u.prev_pos
+		var t: float = _moving_circle_hit(origin, end, unit_position, unit_position, radius)
+		var distance: float = t * remaining if t >= 0.0 else INF
 		if t >= 0.0 and _body_exempt(p,u,origin.lerp(end,t)): continue
-		var moving_t: float = _moving_circle_hit(origin, step_end, Vector2(u.prev_pos), Vector2(u.pos), radius)
-		if moving_t>=0.0 and _body_exempt(p,u,origin.lerp(step_end,moving_t),Vector2(u.prev_pos).lerp(Vector2(u.pos),moving_t)): moving_t=-1.0
+		var moving_t: float = _moving_circle_hit(origin, step_end, unit_previous, unit_position, radius)
+		if moving_t>=0.0 and _body_exempt(p,u,origin.lerp(step_end,moving_t),unit_previous.lerp(unit_position,moving_t)): moving_t=-1.0
 		if moving_t >= entry_t - EPS and moving_t >= 0.0:
-			distance = minf(distance, moving_t * origin.distance_to(step_end))
-		if distance + EPS < entry_distance or distance >= best_distance:
-			continue
+			distance = minf(distance, moving_t * step_distance)
+		if distance + EPS < entry_distance or distance >= best_distance: continue
 		best_distance = distance
 		best = u
 	return best
@@ -1093,9 +1206,14 @@ func _forward_victim(world, p: Dictionary, origin: Vector2, step_end: Vector2, e
 
 func _suppress_along(world, p: Dictionary, origin: Vector2, destination: Vector2, step_fraction: float) -> void:
 	var amount: float = 7.0 if p.kind == "mg" else (2.0 if p.kind == "fragment" else 4.0)
+	var team: int = p.team
+	var shooter_id: int = p.shooter_id
+	var applied: Dictionary = p.suppression_applied
 	for u in _units_in_bounds(world, _segment_bounds(origin, destination, NEAR_MISS_DISTANCE)):
-		if bool(u.dead) or float(u.hp) <= 0.0 or int(u.team) == int(p.team) or int(u.id) == int(p.shooter_id):
-			continue
+		if bool(u.dead) or float(u.hp) <= 0.0 or int(u.team) == team or int(u.id) == shooter_id: continue
+		# A bullet can apply each pressure amount only once. This is the same
+		# guard as _suppress, before an unnecessary second distance calculation.
+		if float(applied.get(int(u.id),0.0)) >= (amount*0.5 if String(u.kind)=="heavy" else amount): continue
 		var unit_start: Vector2 = u.prev_pos
 		var unit_end: Vector2 = unit_start.lerp(Vector2(u.pos), step_fraction)
 		if _distance_to_segment(Vector2.ZERO, origin - unit_start, destination - unit_end) <= NEAR_MISS_DISTANCE:
@@ -1170,19 +1288,27 @@ func _prepare_queries(world) -> void:
 		return
 	_query_buildings = world.buildings
 	_query_units = world.units
-	_building_grid.clear()
-	_wall_grid.clear()
 	_unit_grid.clear()
 	_building_marks.resize(_query_buildings.size())
 	_building_marks.fill(0)
 	_unit_marks.resize(_query_units.size())
 	_unit_marks.fill(0)
 	_query_serial = 0
-	for i in range(_query_buildings.size()):
-		var b: Dictionary = _query_buildings[i]
-		if _building_alive(b) and _barrier_type(b) != "floor":
-			_index_bounds(_building_grid, Rect2(b.rect).grow(QUERY_PADDING), i)
-			if _barrier_type(b)=="wall": _index_bounds(_wall_grid,Rect2(b.rect).grow(QUERY_PADDING),i)
+	if _building_index_revision != _static_revision:
+		_building_grid.clear()
+		_wall_grid.clear()
+		_has_walls = false
+		_wall_bounds = Rect2()
+		for i in range(_query_buildings.size()):
+			var b: Dictionary = _query_buildings[i]
+			if _building_alive(b) and _barrier_type(b) != "floor":
+				_index_bounds(_building_grid, Rect2(b.rect).grow(QUERY_PADDING), i)
+				if _barrier_type(b)=="wall":
+					var wall_bounds: Rect2 = Rect2(b.rect).grow(QUERY_PADDING)
+					_index_bounds(_wall_grid,wall_bounds,i)
+					_wall_bounds = _wall_bounds.merge(wall_bounds) if _has_walls else wall_bounds
+					_has_walls = true
+		_building_index_revision = _static_revision
 	for i in range(_query_units.size()):
 		var u: Dictionary = _query_units[i]
 		if not bool(u.dead) and float(u.hp) > 0.0:
@@ -1215,16 +1341,17 @@ func _buildings_in_bounds(world, bounds: Rect2) -> Array:
 
 func _walls_in_bounds(world, bounds: Rect2, target_id: int = -1) -> Array:
 	if not use_spatial_index or not _queries_ready: return world.buildings
-	var result: Array = _query_bounds(_wall_grid,_query_buildings,_building_marks,bounds)
-	var target: Dictionary = _static_building_ids.get(target_id,{})
-	if not target.is_empty() and _barrier_type(target)!="wall" and not result.has(target): result.append(target)
+	var result: Array = []
+	if _has_walls and _wall_bounds.intersects(bounds,true):
+		result = _query_bounds(_wall_grid,_query_buildings,_building_marks,bounds)
+	var target = _static_building_ids.get(target_id)
+	if target != null and _barrier_type(target)!="wall" and not result.has(target): result.append(target)
 	return result
 
 
 func _units_in_bounds(world, bounds: Rect2) -> Array:
-	if not use_spatial_index or not _queries_ready:
-		return world.units
-	return _query_bounds(_unit_grid, _query_units, _unit_marks, bounds,UNIT_QUERY_CELL_SIZE)
+	if not use_spatial_index or not _queries_ready: return world.units
+	return _query_bounds(_unit_grid,_query_units,_unit_marks,bounds,UNIT_QUERY_CELL_SIZE)
 
 
 func _query_bounds(grid: Dictionary, entities: Array, marks: PackedInt32Array, bounds: Rect2, cell_size: float = QUERY_CELL_SIZE) -> Array:
@@ -1237,7 +1364,8 @@ func _query_bounds(grid: Dictionary, entities: Array, marks: PackedInt32Array, b
 	var indices: Array[int] = []
 	for y in range(first.y, last.y + 1):
 		for x in range(first.x, last.x + 1):
-			for index in grid.get(Vector2i(x, y), []):
+			var bucket: Array = grid.get(Vector2i(x,y), NO_CANDIDATES)
+			for index in bucket:
 				if marks[index] != _query_serial:
 					marks[index] = _query_serial
 					indices.append(index)
@@ -1326,14 +1454,20 @@ func _eligible_allies(world, projectile: Dictionary) -> Array[int]:
 	var result: Array[int] = []
 	if not String(projectile.kind) in ["rifle", "mg"]: return result
 	var reference: Vector2 = projectile.fire_reference
+	var reference_cell: Vector2i = Vector2i(reference.floor())
+	var shooter_id: int = int(projectile.shooter_id)
+	var target_id: int = int(projectile.target_id)
+	var team: int = int(projectile.team)
 	for unit in world.units:
-		if int(unit.id) in [int(projectile.shooter_id), int(projectile.target_id)] or int(unit.team) != int(projectile.team) or bool(unit.dead): continue
+		var id: int = int(unit.id)
+		if id == shooter_id or id == target_id or int(unit.team) != team or bool(unit.dead): continue
 		var moving: bool = Vector2(unit.get("velocity",Vector2.ZERO)).length_squared() > EPS or bool(unit.get("move_active",false))
-		var nearby: bool = reference.distance_to(Vector2(unit.pos)) <= FRIENDLY_LOCAL_RADIUS + SEGMENT_TOLERANCE
-		if not moving:
-			var delta: Vector2i = Vector2i(Vector2(unit.pos).floor())-Vector2i(reference.floor())
+		var nearby: bool
+		if moving: nearby = reference.distance_to(Vector2(unit.pos)) <= FRIENDLY_LOCAL_RADIUS + SEGMENT_TOLERANCE
+		else:
+			var delta: Vector2i = Vector2i(Vector2(unit.pos).floor())-reference_cell
 			nearby = absi(delta.x) <= 1 and absi(delta.y) <= 1
-		if nearby: result.append(int(unit.id))
+		if nearby: result.append(id)
 	return result
 
 
