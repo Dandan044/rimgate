@@ -33,6 +33,7 @@ func run(world_factory: Callable) -> Array[String]:
 	_cross_module_orders(world_factory)
 	_v3_cover_intervals(world_factory)
 	_v3_wall_corner_consistency(world_factory)
+	_v3_ray_cache_lifecycle(world_factory)
 	_v3_body_exemptions(world_factory)
 	_v3_query_and_styles(world_factory)
 	_v3_fire_control_and_preload(world_factory)
@@ -1095,6 +1096,9 @@ func _spatial_equivalence(factory: Callable) -> void:
 		var indexed = _equivalence_scene(factory, 8100 + scene)
 		var reference = _equivalence_scene(factory, 8100 + scene)
 		reference.combat_system.use_spatial_index = false
+		reference.combat_system.use_ray_cache = false
+		reference.combat_system.use_ray_building_index = false
+		reference.combat_system.use_geometry_cache = false
 		for frame in range(12):
 			if frame == 3:
 				indexed.combat_system.explode(indexed, Vector2(8.0, 4.0), scene % 2, 1)
@@ -1113,6 +1117,9 @@ func _spatial_equivalence(factory: Callable) -> void:
 	# The actual pressure layout also exercises weapon targeting and unit movement.
 	var worlds: Array = [factory.call(), factory.call()]
 	worlds[1].combat_system.use_spatial_index = false
+	worlds[1].combat_system.use_ray_cache = false
+	worlds[1].combat_system.use_ray_building_index = false
+	worlds[1].combat_system.use_geometry_cache = false
 	for world in worlds:
 		world.spawn_wave(0)
 		world.spawn_wave(1)
@@ -1471,3 +1478,47 @@ func _v3_wall_corner_consistency(factory: Callable) -> void:
 	_check(not world.combat_system._muzzle_clear(world,Vector2(4.5,3.5),Vector2(4.5,3.5)),"zero-length barrel strictly inside a wall remains blocked")
 	_check(not world.combat_system.has_line_of_fire(world,{"pos":Vector2(4.5,3.5)},target),"muzzle truly inside a wall cannot aim outside it")
 	print("COMBAT_V3_WALL_CORNER query_matches_real=true thin_crossing_blocks=true inside_wall_blocks=true")
+
+
+func _v3_ray_cache_lifecycle(factory: Callable) -> void:
+	var world = _empty(factory)
+	var shooter: Dictionary = State.unit(1,0,Vector2(2.5,5.5))
+	var target: Dictionary = State.unit(100,1,Vector2(14.5,5.5))
+	world.units.assign([shooter,target])
+	var barrier: Dictionary = State.building(1000,"sandbag",Rect2i(8,5,2,1))
+	world.buildings.append(barrier)
+	var weapon: Dictionary = Config.rifle(); weapon.speed=1.0
+	var projectile: Dictionary = world.combat_system.spawn_direct_projectile(world,shooter,target,weapon,1.0)
+	world.combat_system.advance_projectiles(world,DT)
+	var revision: int = world.combat_system._static_revision
+	var hits: int = world.combat_system._ray_cache_hits
+	barrier.hp-=1.0
+	world.combat_system.advance_projectiles(world,DT)
+	_check(world.combat_system._static_revision==revision and world.combat_system._ray_cache_hits>hits,"nonterminal building HP damage reuses cached static rays")
+	barrier.height=.9
+	world.combat_system.advance_projectiles(world,DT)
+	_check(world.combat_system._static_revision>revision,"height changes invalidate static interval and firing-geometry caches")
+	world.projectiles.clear(); barrier.height=.8; barrier.hp=1.0
+	weapon=_fast_rifle()
+	world.combat_system.spawn_direct_projectile(world,shooter,target,weapon,1.0)
+	world.combat_system.spawn_direct_projectile(world,shooter,target,weapon,1.0)
+	barrier.screening_strength=1000000.0
+	# Seed the static cache for both bullets, then a real first impact destroys
+	# the barrier before the following bullet in this same advance pass.
+	world.combat_system._prepare_queries(world)
+	for bullet in world.projectiles:
+		world.combat_system._projectile_cover_segments(world,bullet,bullet.start,Vector2(bullet.start)+Vector2(bullet.dir)*float(bullet.remaining))
+	world.rng.seed=104729
+	world.combat_system.advance_projectiles(world,DT)
+	_check(float(barrier.hp)<=0.0 and float(target.hp)<100.0,"same-pass destruction invalidates previously primed following projectile rays")
+	var other = _empty(factory)
+	other.combat_system=world.combat_system
+	other.units.assign([State.unit(1,0,shooter.pos),State.unit(100,1,target.pos)])
+	other.buildings.append(State.building(1000,"wall",Rect2i(8,5,1,1)))
+	other.combat_system.spawn_direct_projectile(other,other.units[0],other.units[1],_fast_rifle(),1.0)
+	other.combat_system.advance_projectiles(other,DT)
+	_check(float(other.units[1].hp)==100.0,"reusing a Combat instance with another World never reuses old building dictionaries")
+	other.reset(); other.next_wave=3
+	other.start_battle(); other.step()
+	_check(other.combat_system._static_world_id==int(other.get_instance_id()),"World.reset rebuilds cache topology without storing it in replay state")
+	print("COMBAT_V3_CACHE_LIFECYCLE hp_nonterminal_reuses=true attributes_invalidate=true same_pass_death=true world_reset=true")

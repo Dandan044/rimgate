@@ -10,6 +10,7 @@ const MORTAR_AIM_TIME := 4.0
 const MORTAR_FLIGHT_TIME := 3.0
 const BLAST_RADIUS := 4.0
 const QUERY_CELL_SIZE := 4.0
+const UNIT_QUERY_CELL_SIZE := 1.0
 const QUERY_PADDING := 0.001
 const SEGMENT_TOLERANCE := 0.0001
 const FRIENDLY_LOCAL_RADIUS := 1.4142135623730951
@@ -17,8 +18,25 @@ const IDLE_RELOAD_DELAY := 1.5
 
 # The exhaustive path remains available for deterministic equivalence checks.
 var use_spatial_index: bool = true
+# Performance-only state never enters projectile/world dictionaries or replay
+# fingerprints. Both paths remain switchable for exact reference comparisons.
+var use_ray_cache: bool = true
+var use_ray_building_index: bool = true
+var use_geometry_cache: bool = true
+var _geometry_cache: Dictionary = {}
+var _rifle_query_reach: float = float(Config.rifle().range)+1.0
+var _ray_cache: Dictionary = {}
+var _shared_ray_cache: Dictionary = {}
+var _static_world_id: int = -1
+var _static_revision: int = 0
+var _static_snapshot: Array[Dictionary] = []
+var _static_walls: Array[Dictionary] = []
+var _ray_cache_hits: int = 0
+var _ray_cache_misses: int = 0
 var _queries_ready: bool = false
 var _building_grid: Dictionary = {}
+var _wall_grid: Dictionary = {}
+var _static_building_ids: Dictionary = {}
 var _unit_grid: Dictionary = {}
 var _query_buildings: Array = []
 var _query_units: Array = []
@@ -81,15 +99,16 @@ func _cover_segments(world, start: Vector2, end: Vector2, excluded_id: int = -1,
 	var pieces: Array[Dictionary] = []
 	var length: float = start.distance_to(end)
 	if length <= EPS: return pieces
-	for building in _buildings_in_bounds(world, _segment_bounds(start, end)):
+	for building in _ray_buildings(world,start,end):
 		if not _building_alive(building) or _barrier_type(building) == "floor" or int(building.id) in [excluded_id, target_id]: continue
 		var rect: Rect2i = building.rect
+		var signature: String = _cover_signature(building)
+		var wall: bool = _barrier_type(building)=="wall"
 		for y in range(rect.position.y, rect.end.y):
 			for x in range(rect.position.x, rect.end.x):
 				var interval: Vector2 = _segment_rect_interval(start, end, Rect2(x, y, 1.0, 1.0))
 				if not _positive_crossing(start,end,interval): continue
-				var wall: bool = _barrier_type(building) == "wall"
-				pieces.append({"t": interval.x, "exit_t": interval.y, "entry_distance": interval.x * length, "exit_distance": interval.y * length, "building_id": int(building.id), "entity": building, "cell": Vector2i(x,y), "blocked": wall, "signature": _cover_signature(building), "members": [int(building.id)]})
+				pieces.append({"t": interval.x, "exit_t": interval.y, "entry_distance": interval.x * length, "exit_distance": interval.y * length, "building_id": int(building.id), "entity": building, "cell": Vector2i(x,y), "blocked": wall, "signature": signature, "members": [int(building.id)]})
 	pieces.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return int(a.building_id) < int(b.building_id) if absf(float(a.t)-float(b.t)) <= EPS else float(a.t) < float(b.t)
 	)
@@ -106,6 +125,97 @@ func _cover_segments(world, start: Vector2, end: Vector2, excluded_id: int = -1,
 			merged[found].exit_distance = maxf(float(merged[found].exit_distance), float(piece.exit_distance))
 			if not merged[found].members.has(int(piece.building_id)): merged[found].members.append(int(piece.building_id))
 	return merged
+
+
+func _projectile_cover_segments(world, projectile: Dictionary, start: Vector2, end: Vector2) -> Array[Dictionary]:
+	var excluded: int = int(projectile.get("source_building_id",-1))
+	var target: int = int(projectile.target_id)
+	if not use_ray_cache: return _cover_segments(world,start,end,excluded,target)
+	var id: int = int(projectile.id)
+	var previous: Dictionary = _ray_cache.get(id,{})
+	if not previous.is_empty() and int(previous.revision)==_static_revision and previous.start==start and previous.end==end and int(previous.excluded)==excluded and int(previous.target)==target:
+		_ray_cache_hits+=1
+		return previous.segments
+	_ray_cache_misses+=1
+	var ray_key: Array = [start,end,excluded,target]
+	var segments: Array[Dictionary]
+	if _shared_ray_cache.has(ray_key): segments=_shared_ray_cache[ray_key]
+	else:
+		segments=_cover_segments(world,start,end,excluded,target)
+		if _shared_ray_cache.size()>1024: _shared_ray_cache.clear()
+		_shared_ray_cache[ray_key]=segments
+	_ray_cache[id]={"revision":_static_revision,"start":start,"end":end,"excluded":excluded,"target":target,"segments":segments}
+	return segments
+
+
+func _invalidate_static_rays() -> void:
+	_static_revision+=1
+	_ray_cache.clear()
+	_shared_ray_cache.clear()
+	_geometry_cache.clear()
+
+
+func _sync_static_rays(world) -> void:
+	var changed: bool = int(world.get_instance_id())!=_static_world_id or world.buildings.size()!=_static_snapshot.size()
+	if not changed:
+		for index in range(world.buildings.size()):
+			var building: Dictionary = world.buildings[index]
+			var old: Dictionary = _static_snapshot[index]
+			if not is_same(building,old.entity) or _building_alive(building)!=bool(old.alive) or int(building.id)!=int(old.id) or building.rect!=old.rect or _barrier_type(building)!=String(old.barrier) or float(building.get("height",0.0))!=float(old.height) or float(building.get("screening_strength",Config.COVER_VOLUME_SCALE*float(building.get("screen_volume",0.0))))!=float(old.strength) or String(building.get("material",building.get("kind","")))!=String(old.material):
+				changed=true; break
+	if not changed: return
+	_invalidate_static_rays()
+	_static_world_id=int(world.get_instance_id())
+	_static_snapshot.clear()
+	_static_walls.clear()
+	_static_building_ids.clear()
+	for building in world.buildings:
+		_static_building_ids[int(building.id)]=building
+		if _barrier_type(building)=="wall": _static_walls.append(building)
+		_static_snapshot.append({"entity":building,"id":int(building.id),"alive":_building_alive(building),"rect":building.rect,"barrier":_barrier_type(building),"height":float(building.get("height",0.0)),"strength":float(building.get("screening_strength",Config.COVER_VOLUME_SCALE*float(building.get("screen_volume",0.0)))),"material":String(building.get("material",building.get("kind","")))})
+
+
+# The padded existing building buckets include both sides of exact grid edges.
+# Traverse only the ray's buckets, while retaining original entity index order.
+func _ray_buildings(world, start: Vector2, end: Vector2) -> Array:
+	if not use_ray_building_index or not use_spatial_index or not _queries_ready:
+		return _buildings_in_bounds(world,_segment_bounds(start,end))
+	var point: Vector2 = start/QUERY_CELL_SIZE
+	var finish: Vector2 = end/QUERY_CELL_SIZE
+	var cell: Vector2i = Vector2i(point.floor())
+	var last: Vector2i = Vector2i(finish.floor())
+	var delta: Vector2 = finish-point
+	var step_x: int = 1 if delta.x>0.0 else -1 if delta.x<0.0 else 0
+	var step_y: int = 1 if delta.y>0.0 else -1 if delta.y<0.0 else 0
+	var next_x: float = (float(cell.x+(1 if step_x>0 else 0))-point.x)/delta.x if step_x!=0 else INF
+	var next_y: float = (float(cell.y+(1 if step_y>0 else 0))-point.y)/delta.y if step_y!=0 else INF
+	var stride_x: float = absf(1.0/delta.x) if step_x!=0 else INF
+	var stride_y: float = absf(1.0/delta.y) if step_y!=0 else INF
+	var indices: Array[int] = []
+	_query_serial+=1
+	var budget: int = absi(last.x-cell.x)+absi(last.y-cell.y)+3
+	for iteration in range(budget):
+		_collect_ray_bucket(cell,indices)
+		if cell==last: break
+		if next_x<next_y:
+			cell.x+=step_x; next_x+=stride_x
+		elif next_y<next_x:
+			cell.y+=step_y; next_y+=stride_y
+		else:
+			_collect_ray_bucket(cell+Vector2i(step_x,0),indices)
+			_collect_ray_bucket(cell+Vector2i(0,step_y),indices)
+			cell+=Vector2i(step_x,step_y); next_x+=stride_x; next_y+=stride_y
+	indices.sort()
+	var result: Array = []
+	for index in indices: result.append(_query_buildings[index])
+	return result
+
+
+func _collect_ray_bucket(cell: Vector2i, indices: Array[int]) -> void:
+	for index in _building_grid.get(cell,[]):
+		if _building_marks[index]==_query_serial: continue
+		_building_marks[index]=_query_serial
+		indices.append(index)
 
 
 func _cover_signature(building: Dictionary) -> String:
@@ -162,7 +272,7 @@ func has_line_of_fire(world, shooter: Dictionary, target: Dictionary) -> bool:
 	var origin: Vector2 = shooter.pos
 	var destination: Vector2 = target.pos
 	var target_building_id: int = int(target.id) if _is_building(target) else -1
-	for b in world.buildings:
+	for b in (_static_walls if _queries_ready else world.buildings):
 		if not _building_alive(b):
 			continue
 		if _barrier_type(b) == "wall" and _point_inside_rect(origin,Rect2(b.rect)):
@@ -177,6 +287,27 @@ func has_line_of_fire(world, shooter: Dictionary, target: Dictionary) -> bool:
 # Geometry only: automatic posture selection can call this without advancing
 # aim, taking a random draw, or changing an intention.
 func can_fire_pose(world, shooter: Dictionary, target: Dictionary, station: Dictionary = {}) -> Dictionary:
+	# The conservative rifle bound avoids allocating memo entries for remote
+	# AI candidates whose actual barrel cannot possibly reach the target.
+	if station.is_empty() and not shooter.is_empty() and _target_alive(target):
+		var reach: float = _rifle_query_reach
+		if Vector2(shooter.pos).distance_squared_to(Vector2(target.pos))>reach*reach+EPS: return {"ok":false,"reason":"目标超出射程"}
+	if not use_geometry_cache or not _queries_ready or shooter.is_empty() or not _target_alive(target):
+		return _can_fire_pose_uncached(world,shooter,target,station)
+	var key: Vector4i = Vector4i(int(shooter.get("id",-1)),int(target.id),int(station.get("id",-1)),_posture(shooter))
+	var cached: Dictionary = _geometry_cache.get(key,{})
+	var facing: float = float(station.get("facing",0.0))
+	var arc: float = float(station.get("arc",0.0))
+	var kind: String = String(station.get("kind",""))
+	var position: Vector2 = shooter.pos if station.is_empty() else station.pos
+	if not cached.is_empty() and cached.origin==position and cached.target_pos==target.pos and float(cached.facing)==facing and float(cached.arc)==arc and String(cached.kind)==kind:
+		return cached.result.duplicate()
+	var result: Dictionary = _can_fire_pose_uncached(world,shooter,target,station)
+	_geometry_cache[key]={"origin":position,"target_pos":target.pos,"facing":facing,"arc":arc,"kind":kind,"result":result.duplicate()}
+	return result
+
+
+func _can_fire_pose_uncached(world, shooter: Dictionary, target: Dictionary, station: Dictionary = {}) -> Dictionary:
 	if shooter.is_empty() or not _target_alive(target): return {"ok":false,"reason":"目标已失效"}
 	var posture: int = _posture(shooter)
 	if not station.is_empty() and posture > 1: return {"ok":false,"reason":"当前姿态无法操作工事"}
@@ -189,6 +320,11 @@ func can_fire_pose(world, shooter: Dictionary, target: Dictionary, station: Dict
 		if not _muzzle_clear(world,Vector2(mortar_pose.get("pivot",origin)),Vector2(mortar_pose.muzzle)): return {"ok":false,"reason":"炮口被墙体阻挡"}
 		return {"ok":true,"reason":""}
 	if not station.is_empty() and absf(wrapf(offset.angle()-float(station.facing),-PI,PI)) > float(station.arc)*.5+EPS: return {"ok":false,"reason":"目标在工事射界之外"}
+	# Every current shared rifle/station mount is shorter than one grid cell.
+	# This is only a conservative rejection; the final range still uses the
+	# computed physical muzzle below. It skips pose solving for distant AI
+	# candidates without extending or shrinking any weapon's real reach.
+	if offset.length_squared()>pow(float(weapon.range)+1.0,2.0)+EPS: return {"ok":false,"reason":"目标超出射程"}
 	var pose: Dictionary = Pose.aimed_rifle(origin,Vector2(target.pos),posture) if station.is_empty() else Pose.station(origin,offset.angle(),"mg")
 	var muzzle: Vector2 = pose.muzzle
 	var pivot: Vector2 = pose.get("pivot",origin)
@@ -352,7 +488,7 @@ func spawn_direct_projectile(world, shooter: Dictionary, target: Dictionary, wea
 
 
 func _muzzle_clear(world, base: Vector2, muzzle: Vector2) -> bool:
-	for building in _buildings_in_bounds(world, _segment_bounds(base, muzzle)):
+	for building in _walls_in_bounds(world,_segment_bounds(base,muzzle)):
 		if not _building_alive(building) or _barrier_type(building) != "wall": continue
 		var rect: Rect2 = Rect2(building.rect)
 		if _point_inside_rect(base,rect) or _point_inside_rect(muzzle,rect) or _positive_crossing(base,muzzle,_segment_rect_interval(base,muzzle,rect)):
@@ -375,6 +511,15 @@ func advance_projectiles(world, dt: float) -> void:
 		var survives: bool = _advance_shell(world, p, dt) if p.kind == "mortar" else _advance_direct(world, p, dt)
 		if survives:
 			world.projectiles.append(p)
+		else:
+			_ray_cache.erase(int(p.id))
+	# External QA/reset code may drop live bullets without an impact callback.
+	# Keep private scratch bounded; surviving bullets retain their cached rays.
+	if _ray_cache.size()>world.projectiles.size()+32:
+		var live: Dictionary = {}
+		for projectile in world.projectiles: live[int(projectile.id)]=true
+		for key in _ray_cache.keys():
+			if not live.has(key): _ray_cache.erase(key)
 	# Position/shape changes outside this combat pass must never reuse a stale grid.
 	_queries_ready = false
 
@@ -856,13 +1001,13 @@ func _advance_direct(world, p: Dictionary, dt: float) -> bool:
 			collisions.append({"t": t, "priority": 1, "kind": "unit", "entity": u, "id": int(u.id)})
 	if bool(p.get("prefix_pending", false)):
 		var prefix: Vector2 = p.get("prefix_start", origin)
-		for u in world.units:
+		for u in _units_in_bounds(world,_segment_bounds(prefix,Vector2(p.start))):
 			if bool(u.dead) or float(u.hp) <= 0.0 or int(u.id) == int(p.shooter_id): continue
 			var t: float = _moving_circle_hit(prefix, Vector2(p.start), Vector2(u.pos), Vector2(u.pos), _radius(u))
 			if t >= 0.0 and not _body_exempt(p, u, prefix.lerp(Vector2(p.start),t)):
 				collisions.append({"t": -1.0+t*.999, "point":prefix.lerp(Vector2(p.start),t), "priority":1, "kind":"unit", "entity":u, "id":int(u.id)})
 		p["prefix_pending"] = false
-	for b in _buildings_in_bounds(world, bounds):
+	for b in _walls_in_bounds(world,bounds,int(p.target_id)):
 		if not _building_alive(b) or _barrier_type(b) == "floor" or int(b.id) == int(p.get("source_building_id", -1)): continue
 		if _barrier_type(b) == "wall" or int(b.id) == int(p.target_id):
 			var interval: Vector2 = _segment_rect_interval(origin, destination, Rect2(b.rect))
@@ -870,9 +1015,10 @@ func _advance_direct(world, p: Dictionary, dt: float) -> bool:
 				collisions.append({"t": interval.x, "priority": 0, "kind": "building", "entity": b, "id": int(b.id)})
 	var full_start: Vector2 = p.get("start", origin-Vector2(p.dir)*float(p.travelled))
 	var full_end: Vector2 = full_start+Vector2(p.dir)*(float(p.travelled)+float(p.remaining))
-	for segment in _cover_segments(world, full_start, full_end, int(p.get("source_building_id",-1)), int(p.target_id)):
-		if bool(segment.blocked) or _segment_checked(p,segment): continue
+	for segment in _projectile_cover_segments(world,p,full_start,full_end):
+		if bool(segment.blocked): continue
 		if float(segment.exit_distance) < float(p.travelled)-SEGMENT_TOLERANCE or float(segment.entry_distance) > float(p.travelled)+distance+EPS: continue
+		if _segment_checked(p,segment): continue
 		var t: float = clampf((float(segment.entry_distance)-float(p.travelled))/maxf(EPS,distance),0.0,1.0)
 		collisions.append({"t": t, "priority": 0, "kind": "low", "entity": segment.entity, "id": int(segment.building_id), "cell": segment.cell, "segment":segment})
 	collisions.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
@@ -975,6 +1121,7 @@ func _damage_building(world, b: Dictionary, damage: float, source: Dictionary) -
 	if actual <= 0.0:
 		return
 	b.hp = maxf(0.0, float(b.hp) - actual)
+	if float(b.hp)<=0.0: _invalidate_static_rays()
 	world.stats.damage = float(world.stats.get("damage", 0.0)) + actual
 	world.emit_event("damage", {"entity_id": int(b.id), "shooter_id": int(source.get("shooter_id", -1)), "projectile_id": int(source.get("id", -1)), "pos": Vector2(b.pos), "team": int(source.team), "target_team": 0, "weapon_kind": String(source.kind), "amount": actual, "hp": float(b.hp), "bleeding": false})
 
@@ -1017,12 +1164,14 @@ func _blast_barrier(snapshot: Array[Dictionary], origin: Vector2, target: Vector
 
 
 func _prepare_queries(world) -> void:
+	_sync_static_rays(world)
 	_queries_ready = false
 	if not use_spatial_index:
 		return
 	_query_buildings = world.buildings
 	_query_units = world.units
 	_building_grid.clear()
+	_wall_grid.clear()
 	_unit_grid.clear()
 	_building_marks.resize(_query_buildings.size())
 	_building_marks.fill(0)
@@ -1033,11 +1182,12 @@ func _prepare_queries(world) -> void:
 		var b: Dictionary = _query_buildings[i]
 		if _building_alive(b) and _barrier_type(b) != "floor":
 			_index_bounds(_building_grid, Rect2(b.rect).grow(QUERY_PADDING), i)
+			if _barrier_type(b)=="wall": _index_bounds(_wall_grid,Rect2(b.rect).grow(QUERY_PADDING),i)
 	for i in range(_query_units.size()):
 		var u: Dictionary = _query_units[i]
 		if not bool(u.dead) and float(u.hp) > 0.0:
 			# Include the full motion envelope, including unconscious/prone bodies.
-			_index_bounds(_unit_grid, _segment_bounds(Vector2(u.prev_pos), Vector2(u.pos), _radius(u)), i)
+			_index_bounds(_unit_grid, _segment_bounds(Vector2(u.prev_pos), Vector2(u.pos), _radius(u)), i,UNIT_QUERY_CELL_SIZE)
 	_queries_ready = true
 
 
@@ -1046,9 +1196,9 @@ func _segment_bounds(start: Vector2, end: Vector2, margin: float = 0.0) -> Rect2
 	return Rect2(start.min(end), (end - start).abs()).grow(padding)
 
 
-func _index_bounds(grid: Dictionary, bounds: Rect2, index: int) -> void:
-	var first: Vector2i = Vector2i((bounds.position / QUERY_CELL_SIZE).floor())
-	var last: Vector2i = Vector2i((bounds.end / QUERY_CELL_SIZE).floor())
+func _index_bounds(grid: Dictionary, bounds: Rect2, index: int, cell_size: float = QUERY_CELL_SIZE) -> void:
+	var first: Vector2i = Vector2i((bounds.position / cell_size).floor())
+	var last: Vector2i = Vector2i((bounds.end / cell_size).floor())
 	for y in range(first.y, last.y + 1):
 		for x in range(first.x, last.x + 1):
 			var cell: Vector2i = Vector2i(x, y)
@@ -1063,15 +1213,23 @@ func _buildings_in_bounds(world, bounds: Rect2) -> Array:
 	return _query_bounds(_building_grid, _query_buildings, _building_marks, bounds)
 
 
+func _walls_in_bounds(world, bounds: Rect2, target_id: int = -1) -> Array:
+	if not use_spatial_index or not _queries_ready: return world.buildings
+	var result: Array = _query_bounds(_wall_grid,_query_buildings,_building_marks,bounds)
+	var target: Dictionary = _static_building_ids.get(target_id,{})
+	if not target.is_empty() and _barrier_type(target)!="wall" and not result.has(target): result.append(target)
+	return result
+
+
 func _units_in_bounds(world, bounds: Rect2) -> Array:
 	if not use_spatial_index or not _queries_ready:
 		return world.units
-	return _query_bounds(_unit_grid, _query_units, _unit_marks, bounds)
+	return _query_bounds(_unit_grid, _query_units, _unit_marks, bounds,UNIT_QUERY_CELL_SIZE)
 
 
-func _query_bounds(grid: Dictionary, entities: Array, marks: PackedInt32Array, bounds: Rect2) -> Array:
-	var first: Vector2i = Vector2i((bounds.position / QUERY_CELL_SIZE).floor())
-	var last: Vector2i = Vector2i((bounds.end / QUERY_CELL_SIZE).floor())
+func _query_bounds(grid: Dictionary, entities: Array, marks: PackedInt32Array, bounds: Rect2, cell_size: float = QUERY_CELL_SIZE) -> Array:
+	var first: Vector2i = Vector2i((bounds.position / cell_size).floor())
+	var last: Vector2i = Vector2i((bounds.end / cell_size).floor())
 	# Long diagonal/high-speed sweeps can cover more grid cells than entities.
 	if (last.x - first.x + 1) * (last.y - first.y + 1) >= entities.size():
 		return entities
