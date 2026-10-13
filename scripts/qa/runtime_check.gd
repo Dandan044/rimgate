@@ -51,9 +51,7 @@ func setup(target) -> void:
 	elif mode == "input_v3":
 		# Release templates forbid external --script/--main-pack overrides.
 		# Keep the actual Viewport input harness opt-in inside this tested PCK.
-		var runner = load("res://scripts/qa/input_v3_check.gd").new()
-		get_tree().root.add_child(runner)
-		runner.setup(screen)
+		call_deferred("_start_input_v3")
 	elif mode == "interaction":
 		duration = 180.0
 		var runner = load("res://scripts/qa/interaction_check.gd").new()
@@ -70,6 +68,12 @@ func setup(target) -> void:
 	else:
 		failures.append("Unknown QA mode: " + mode); _finish()
 	print("QA_STARTED mode=", mode, " duration=", duration)
+
+func _start_input_v3() -> void:
+	# setup is called during the main scene's _ready; the root is still busy.
+	var runner = load("res://scripts/qa/input_v3_check.gd").new()
+	get_tree().root.add_child(runner)
+	runner.setup(screen)
 
 func _prepare_display_review() -> void:
 	screen.apply_review_orders()
