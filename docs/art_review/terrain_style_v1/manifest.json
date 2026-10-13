@@ -1,0 +1,45 @@
+{
+  "generator": "builtin image_gen material originals; Godot scene composition",
+  "production_assets_modified": false,
+  "purpose": "Static terrain/floor art review; not gameplay screenshot or implemented demo change",
+  "same_layout_and_pawns": true,
+  "sources": [
+    {
+      "board": "a-soft-painted.png",
+      "size": [
+        1600,
+        1180
+      ],
+      "source": "source/a-materials.png",
+      "style": "a"
+    },
+    {
+      "board": "b-clear-tactical.png",
+      "size": [
+        1600,
+        1180
+      ],
+      "source": "source/b-materials.png",
+      "style": "b"
+    },
+    {
+      "board": "c-weathered-industrial.png",
+      "size": [
+        1600,
+        1180
+      ],
+      "source": "source/c-materials.png",
+      "style": "c"
+    }
+  ],
+  "prompts": "prompts.json",
+  "sampling": "four phase edge crossfade; original source atlases untouched; production seam/variant work pending",
+  "source_hashes": {
+    "a-materials.png": "5506cca688eb36e4f7c9262aadf242ced641c8be14de188831e272cb96d170c0",
+    "b-materials.png": "354c5f4d561f7e0b78162e4d0109d1bd5a52a444848ea761f900892954ce97e7",
+    "c-materials.png": "5b7e5b609155f55bba92cea613658daa6697fcdbf01bd2b9aa64565df50bd4bd"
+  },
+  "review_status": "A soft-painted terrain direction approved by user; B/C not selected; production integration pending",
+  "approved_style": "a",
+  "approved_date": "2026-10-13"
+}

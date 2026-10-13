@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 64 64"><g id="features"><g transform="translate(26.2 26.4) scale(0.8351999999999999 0.8265) translate(-26.2 -26.4)"><g transform="">
+    <defs><clipPath id="eye-0"><path d="M22.3 24.96Q25.6 24.0 30.1 25.94L29.4 28.8Q26.5 29.8 23.5 28.7Z"/></clipPath>
+    <linearGradient id="iris-eye-0" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#45392b"/><stop offset=".62" stop-color="#ad854d"/><stop offset="1" stop-color="#e4c88b"/></linearGradient></defs>
+    <path d="M22.2 23.91Q25.7 23.0 30.2 25.040000000000003L30 26.34Q25.7 24.0 22.3 25.36Z" fill="#6c6b60" opacity=".18"/>
+    <path d="M22.3 24.96Q25.6 24.0 30.1 25.94L29.4 28.8Q26.5 29.8 23.5 28.7Z" fill="#f7f5e9" stroke="#171f24" stroke-width=".55"/>
+    <g clip-path="url(#eye-0)"><g transform="translate(0.28 0)">
+    <path d="M24.1 23.4Q26.5 22.8 28.9 23.4L28.7 28.6Q26.6 29.8 24.3 28.6Z" fill="url(#iris-eye-0)" stroke="#171f24" stroke-width=".65"/>
+    <rect x="26" y="23.7" width=".9" height="3.6" rx=".4" fill="#171f24" opacity=".75"/>
+    <ellipse cx="24.9" cy="25.5" rx=".43" ry=".62" fill="#fffbed" opacity=".9"/>
+    </g></g>
+    <path d="M21.9 24.86Q25.6 23.2 30.5 25.84L29.9 26.990000000000002Q25.6 24.5 22.7 26.11Z" fill="#171f24"/>
+    </g></g><g transform="translate(37.8 26.4) scale(0.8351999999999999 0.8265) translate(-37.8 -26.4)"><g transform="translate(64 0) scale(-1 1)">
+    <defs><clipPath id="eye-1"><path d="M22.3 24.96Q25.6 24.0 30.1 25.94L29.4 28.8Q26.5 29.8 23.5 28.7Z"/></clipPath>
+    <linearGradient id="iris-eye-1" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#45392b"/><stop offset=".62" stop-color="#ad854d"/><stop offset="1" stop-color="#e4c88b"/></linearGradient></defs>
+    <path d="M22.2 23.91Q25.7 23.0 30.2 25.040000000000003L30 26.34Q25.7 24.0 22.3 25.36Z" fill="#6c6b60" opacity=".18"/>
+    <path d="M22.3 24.96Q25.6 24.0 30.1 25.94L29.4 28.8Q26.5 29.8 23.5 28.7Z" fill="#f7f5e9" stroke="#171f24" stroke-width=".55"/>
+    <g clip-path="url(#eye-1)"><g transform="translate(-0.28 0)">
+    <path d="M24.1 23.4Q26.5 22.8 28.9 23.4L28.7 28.6Q26.6 29.8 24.3 28.6Z" fill="url(#iris-eye-1)" stroke="#171f24" stroke-width=".65"/>
+    <rect x="26" y="23.7" width=".9" height="3.6" rx=".4" fill="#171f24" opacity=".75"/>
+    <ellipse cx="24.9" cy="25.5" rx=".43" ry=".62" fill="#fffbed" opacity=".9"/>
+    </g></g>
+    <path d="M21.9 24.86Q25.6 23.2 30.5 25.84L29.9 26.990000000000002Q25.6 24.5 22.7 26.11Z" fill="#171f24"/>
+    </g></g><path d="M23.7 22.6L29.1 23.8M34.9 23.8L40.3 22.6" fill="none" stroke="#20272b" stroke-width="0.62" stroke-linecap="round"/><path d="M31.9 29.3L31.6 30.5H32.4" fill="none" stroke="#766354" stroke-width=".38" stroke-linecap="round"/><path d="M30.9 32.6H33.1" fill="none" stroke="#72584e" stroke-width=".47" stroke-linecap="round"/></g></svg>

@@ -4,7 +4,7 @@
 
 游戏使用 [Godot Engine](https://godotengine.org/license/)；引擎MIT许可随包保存于 `docs/GODOT_LICENSE.txt`，第三方组件说明见该官方许可页与 [官方分发说明](https://docs.godotengine.org/en/stable/about/complying_with_licenses.html)。字体许可证另随包保留。
 
-当前运行版本引用 `assets/art/vector/` 的原创 SVG 人物与工事，详细规格见本文末尾的“原创矢量基础样板”。地面由静态 CanvasItem 绘制，使用稀疏 SVG 草丛点缀；不再引用旧 PNG 地形图集。下面保留旧素材来源记录，便于回溯。
+当前运行版本默认引用 `assets/art/pawns_ai/` 的AI人物部件与 `assets/art/vector/` 的原创SVG工事。原SVG人物及更早PNG图集均完整保留，暂停菜单可切回初版SVG小人。新人物制作和短测见 [小人美术接入](PAWN_ART_UPDATE.md)。地面与工事未随本轮人物美术改动。
 
 ## 旧版 PNG 角色与工事（留作回退）
 
@@ -61,6 +61,8 @@ UI 契约检查脚本为 `scripts/ui/ui_contract_test.gd`，验证暂停与岗�
 验证：五个 SVG 均经 Godot 4.7.2 的 `Image.load_svg_from_string()` 实际载入，返回 `OK`，尺寸与上述一致；栅格化临时预览已目视检查轮廓、四向、姿态、色板及图集格边。临时 QA PNG 位于系统临时目录，不作为工程素材。实际战场接入、720p/1080p 尺度与移动观感仍由总负责人在小场景验收，不能仅凭图集预览宣布修订完成。
 
 ## Demo v0.2 表现与声音修订
+
+第三版在 `assets/art/v3/` 接入已定稿的A地表、独立四特征人物与表情、固定敌种姿态、沙袋/墙体16邻接缓存、方案1核心和独立机枪部件。制作来源、重建工具及仅用于离线烘焙的输入清单见该目录 `manifest.json`；AI原稿和提示词仍保留在原始source目录，面部/遮面及辅助轮廓使用原创SVG。运行包排除离线输入和审稿文件，源码保留重建所需资源。第三版实际验收见 `V3_TEST_REPORT.md`；下述v0.2内容保留为历史。
 
 保留上述 SVG 人物轮廓、阵营配色、图集尺寸、平涂和线性采样。工事图集新增统一左上光源的顶面亮边、右侧暗面和少量接缝；场景补充接地阴影、低对比地表色块及道路磨损。装饰不参与寻路、占位或遮挡，静态地面仍由独立 CanvasItem 缓存。
 

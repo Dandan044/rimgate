@@ -1,0 +1,268 @@
+{
+  "source": "assets/art/vector/friendly_atlas.svg",
+  "source_sha256": "94bc97e1ddaaa4b67496f4d5835ddf331e9e92a458dedf03f53098fd3ac83abf",
+  "profiles": [
+    {
+      "id": "01",
+      "features": 0,
+      "face": 0,
+      "hair": 0,
+      "body": 0
+    },
+    {
+      "id": "02",
+      "features": 1,
+      "face": 1,
+      "hair": 1,
+      "body": 2
+    },
+    {
+      "id": "03",
+      "features": 2,
+      "face": 2,
+      "hair": 2,
+      "body": 1
+    },
+    {
+      "id": "04",
+      "features": 3,
+      "face": 3,
+      "hair": 3,
+      "body": 5
+    },
+    {
+      "id": "05",
+      "features": 4,
+      "face": 4,
+      "hair": 4,
+      "body": 3
+    },
+    {
+      "id": "06",
+      "features": 5,
+      "face": 5,
+      "hair": 5,
+      "body": 4
+    }
+  ],
+  "bodies": [
+    {
+      "id": "B01",
+      "name": "纤细",
+      "shoulder": 8.1,
+      "waist": 5.8,
+      "hip": 7.2,
+      "leg": 2.7,
+      "torso": 25,
+      "legs": 19,
+      "neck_y": 45,
+      "foot_y": 94
+    },
+    {
+      "id": "B02",
+      "name": "匀称",
+      "shoulder": 9.7,
+      "waist": 7.2,
+      "hip": 8.5,
+      "leg": 3.1,
+      "torso": 26,
+      "legs": 20,
+      "neck_y": 43,
+      "foot_y": 94
+    },
+    {
+      "id": "B03",
+      "name": "宽肩壮实",
+      "shoulder": 12.7,
+      "waist": 9.1,
+      "hip": 10.1,
+      "leg": 3.7,
+      "torso": 28,
+      "legs": 18,
+      "neck_y": 43,
+      "foot_y": 94
+    },
+    {
+      "id": "B04",
+      "name": "圆润",
+      "shoulder": 11.6,
+      "waist": 12.2,
+      "hip": 12.4,
+      "leg": 4.0,
+      "torso": 29,
+      "legs": 16,
+      "neck_y": 44,
+      "foot_y": 94
+    },
+    {
+      "id": "B05",
+      "name": "娇小",
+      "shoulder": 8.1,
+      "waist": 6.4,
+      "hip": 7.3,
+      "leg": 2.8,
+      "torso": 22,
+      "legs": 15,
+      "neck_y": 52,
+      "foot_y": 94
+    },
+    {
+      "id": "B06",
+      "name": "高挑",
+      "shoulder": 9.1,
+      "waist": 6.6,
+      "hip": 8.0,
+      "leg": 2.9,
+      "torso": 29,
+      "legs": 25,
+      "neck_y": 35,
+      "foot_y": 94
+    }
+  ],
+  "faces": [
+    {
+      "id": "01",
+      "name": "椭圆脸 · 侧分短发",
+      "detail": "细弧眉 / 青灰瞳 / 小幅微笑",
+      "skin": "#efd0b6",
+      "hair": "#3f5358",
+      "light": "#71878a",
+      "iris": [
+        "#283b41",
+        "#4c8588",
+        "#a0cec0"
+      ],
+      "eye_y": 1.0,
+      "eye_x": 0.99,
+      "brow": 0,
+      "face": "M32 10C24 10 20.8 15.8 20.8 22C20.8 28.8 25 34.5 32 35.6C39 34.5 43.2 28.8 43.2 22C43.2 15.8 40 10 32 10Z"
+    },
+    {
+      "id": "02",
+      "name": "方脸 · 利落寸头",
+      "detail": "平直粗眉 / 茶金瞳 / 短平嘴",
+      "skin": "#d2ad8d",
+      "hair": "#695447",
+      "light": "#9d8270",
+      "iris": [
+        "#3d3527",
+        "#a38346",
+        "#ddc983"
+      ],
+      "eye_y": 0.94,
+      "eye_x": 1.02,
+      "brow": 1,
+      "face": "M25 11Q20.5 12.4 20.6 18L20.9 26.3Q22 31.9 26.2 33.8Q32 35 37.8 33.8Q42 31.9 43.1 26.3L43.4 18Q43.5 12.4 39 11Z"
+    },
+    {
+      "id": "03",
+      "name": "心形脸 · 齐刘海短发",
+      "detail": "柔细眉 / 翡翠瞳 / 小巧鼻嘴",
+      "skin": "#f2d9c4",
+      "hair": "#735b50",
+      "light": "#ab8a74",
+      "iris": [
+        "#253e34",
+        "#40855a",
+        "#a6d99a"
+      ],
+      "eye_y": 1.02,
+      "eye_x": 1.01,
+      "brow": 2,
+      "face": "M32 10C22 9.5 19.7 16 20 22C20.4 28 25.8 33 30.8 35.1Q32 35.9 33.2 35.1C38.2 33 43.6 28 44 22C44.3 16 42 9.5 32 10Z"
+    },
+    {
+      "id": "04",
+      "name": "长脸 · 后梳短发",
+      "detail": "斜挑眉 / 琥珀瞳 / 窄鼻梁",
+      "skin": "#e5c8ac",
+      "hair": "#9b9180",
+      "light": "#c5baa2",
+      "iris": [
+        "#45392b",
+        "#ad854d",
+        "#e4c88b"
+      ],
+      "eye_y": 0.95,
+      "eye_x": 0.96,
+      "brow": 3,
+      "face": "M32 9Q22 9 21.3 17V27Q22.5 34 32 36.5Q41.5 34 42.7 27V17Q42 9 32 9Z"
+    },
+    {
+      "id": "05",
+      "name": "梨形脸 · 蓬松卷发",
+      "detail": "柔弧浓眉 / 绛红瞳 / 宽鼻尖",
+      "skin": "#c8a388",
+      "hair": "#48434c",
+      "light": "#79717c",
+      "iris": [
+        "#423039",
+        "#a46066",
+        "#e8b3a4"
+      ],
+      "eye_y": 0.97,
+      "eye_x": 0.99,
+      "brow": 4,
+      "face": "M32 10C24 10 21.6 14.9 22 21Q17.9 28.5 23.2 32.2Q27.3 35.4 32 35.2Q36.7 35.4 40.8 32.2Q46.1 28.5 42 21C42.4 14.9 40 10 32 10Z"
+    },
+    {
+      "id": "06",
+      "name": "柔和收颌脸 · 偏分低马尾",
+      "detail": "短锐眉 / 紫灰瞳 / 克制唇线",
+      "skin": "#efd8c6",
+      "hair": "#b1b3ad",
+      "light": "#dfddd1",
+      "iris": [
+        "#363044",
+        "#796a9b",
+        "#c6b6df"
+      ],
+      "eye_y": 1.0,
+      "eye_x": 1.0,
+      "brow": 5,
+      "face": "M32 10C26 10 22.2 13.6 21.5 19Q20.7 23.4 22 27.5C23.8 32.5 28.2 35.1 31.3 35.5Q32 35.7 32.7 35.5C35.8 35.1 40.2 32.5 42 27.5Q43.3 23.4 42.5 19C41.8 13.6 38 10 32 10Z"
+    }
+  ],
+  "hair_names": [
+    "侧分长直发",
+    "侧分短发",
+    "波浪中长发",
+    "后梳短发",
+    "柔软短卷发",
+    "偏分长马尾"
+  ],
+  "component_axes": [
+    "features",
+    "face",
+    "hair",
+    "body"
+  ],
+  "head_local_socket": [
+    32,
+    34
+  ],
+  "foot_anchor": [
+    32,
+    94
+  ],
+  "canvas": [
+    512,
+    832
+  ],
+  "runtime_modified": false,
+  "approval": "pending",
+  "view": "front",
+  "four_way_mix": {
+    "id": "mix",
+    "features": 0,
+    "face": 5,
+    "hair": 2,
+    "body": 2
+  },
+  "structural_constraints": {
+    "arms": false,
+    "hands": false,
+    "leg_gap": "continuous silhouette with faint central seam"
+  },
+  "art_status": "structure study, not polished final art"
+}

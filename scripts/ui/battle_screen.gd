@@ -15,6 +15,26 @@ var world = World.new()
 var selected: Array[int] = []
 var selected_building: int = -1
 var inspected_enemy: int = -1
+var primary_selected: int = -1
+var formation_preview: Dictionary = {}
+var right_dragging := false
+var right_start := Vector2.ZERO
+var right_end := Vector2.ZERO
+var right_world_start := Vector2.ZERO
+var right_squad_origin := Vector2.ZERO
+var formation_last_update := 0
+var fire_control_option: OptionButton
+var target_policy_option: OptionButton
+var minimap_toggle: Button
+var shot_panel: PanelContainer
+var shot_label: RichTextLabel
+var shot_cache: Dictionary = {}
+var shot_cache_key := ""
+var shot_query_at := -1000
+var shot_query_count := 0
+var alt_details := false
+var tactical_cursor := Vector2.ZERO
+var cursor_observed := false
 var hover_enemy: int = -1
 var last_hover_enemy: int = -1
 var aim_station: int = -1
@@ -40,6 +60,7 @@ var start_button: Button
 var pause_button: Button
 var fire_button: Button
 var draft_button: Button
+var stop_button: Button
 var posture_option: OptionButton
 var style_option: OptionButton
 var unit_buttons: Array[Button] = []
@@ -98,6 +119,14 @@ func _ready() -> void:
 	_sync_pause()
 	_refresh_hud()
 	_parse_review_args()
+	if "--pawn-art-review" in OS.get_cmdline_user_args():
+		var art_review = load("res://scripts/qa/pawn_art_review.gd").new()
+		add_child(art_review)
+		art_review.setup(self)
+	if "--pawn-fit-review" in OS.get_cmdline_user_args():
+		var fit_review = load("res://scripts/qa/pawn_fit_review.gd").new()
+		add_child(fit_review)
+		fit_review.setup(self)
 	if world.phase == "preparing":
 		show_toast("准备阶段：右键工事安排人员，点击“开始防守”推进。", 7)
 	for argument in OS.get_cmdline_user_args():
@@ -125,11 +154,12 @@ func _process(delta: float) -> void:
 		camera.position += movement.normalized() * 700 * delta / camera.zoom.x
 		_clamp_camera()
 	hover_enemy = -1
-	if not _over_hud(get_viewport().get_mouse_position()):
-		var hovered: Dictionary = _pick_unit(mouse_world())
+	if not _over_hud(_cursor_position()):
+		var hovered: Dictionary = _pick_unit(viewport_to_grid(_cursor_position()))
 		if not hovered.is_empty() and int(hovered.team) == 1:
 			hover_enemy = int(hovered.id)
 			last_hover_enemy = hover_enemy
+	_update_shot_preview()
 	_check_events()
 	toast_time = maxf(0, toast_time - delta)
 	toast_label.visible = toast_time > 0
@@ -148,26 +178,85 @@ func _process(delta: float) -> void:
 			capture_review_frame(review_capture_path)
 
 func _input(event: InputEvent) -> void:
-	# Receive tactical right clicks before an open context menu consumes them.
-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
-		_dispatch_right_click(event.position, event.get_instance_id())
+	if event is InputEventMouseButton or event is InputEventMouseMotion:
+		tactical_cursor = event.position; cursor_observed = true
+	# Capture right input before PopupMenu consumes it. Empty-ground commands
+	# commit on release; interactive targets keep immediate context behavior.
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT:
+		if event.pressed: _dispatch_right_click(event.position, event.get_instance_id())
+		elif right_dragging:
+			_finish_right_drag(event.position)
+			get_viewport().set_input_as_handled()
+	elif event is InputEventMouseMotion and right_dragging:
+		right_end = event.position
+		if Time.get_ticks_msec() - formation_last_update >= 100: _update_formation_preview(event.position)
+		get_viewport().set_input_as_handled()
+	elif event is InputEventKey and event.keycode == KEY_ALT:
+		alt_details = event.pressed
+		_update_shot_preview()
 
 func _popup_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT:
 		popup.set_input_as_handled()
-		if event.pressed: _dispatch_right_click(event.position + Vector2(popup.position), event.get_instance_id())
+		var point: Vector2 = event.position + Vector2(popup.position)
+		tactical_cursor = point; cursor_observed = true
+		if event.pressed: _dispatch_right_click(point, event.get_instance_id())
+		elif right_dragging: _finish_right_drag(point)
 
 func _dispatch_right_click(point: Vector2, event_id: int) -> void:
 	if event_id == last_right_event: return
 	last_right_event = event_id
 	if _over_hud(point) or pause_overlay.visible or result_overlay.visible: return
-	popup.hide()
-	popup_revision += 1
-	popup_actions.clear()
-	aim_station = -1
-	selecting = false
-	_right_click(viewport_to_grid(point), point)
+	popup.hide(); popup_revision += 1; popup_actions.clear()
+	aim_station = -1; selecting = false; right_dragging = false; formation_preview.clear(); hud.queue_redraw()
+	var grid_point := viewport_to_grid(point)
+	if not _pick_unit(grid_point).is_empty() or not _pick_building(grid_point).is_empty():
+		_right_click(grid_point, point)
+	elif not selected.is_empty():
+		selected_building = -1
+		right_dragging = true; right_start = point; right_end = point; right_world_start = grid_point
+		right_squad_origin = Vector2.ZERO
+		for id in selected: right_squad_origin += Vector2(world.entity(id).pos)
+		right_squad_origin /= float(selected.size())
+		_update_formation_preview(point)
 	get_viewport().set_input_as_handled()
+
+func _formation_parameters(point: Vector2) -> Dictionary:
+	var offset := viewport_to_grid(point) - right_world_start
+	var axis := offset.normalized() if offset.length_squared() > 0.000001 else Vector2.RIGHT
+	var spacing := clampf(offset.length() / maxf(1.0, float(selected.size() - 1)), 1.0, 4.0)
+	var clockwise := Vector2(-axis.y, axis.x)
+	var intended := right_world_start - right_squad_origin
+	var facing := clockwise if clockwise.dot(intended) >= 0.0 else -clockwise
+	return {"axis": axis, "spacing": spacing, "facing": facing.angle()}
+
+func _update_formation_preview(point: Vector2) -> void:
+	formation_last_update = Time.get_ticks_msec(); right_end = point
+	if not right_dragging: return
+	var parameters := _formation_parameters(point)
+	var long_drag := right_start.distance_to(point) > 8.0 and selected.size() > 1
+	if long_drag:
+		formation_preview = world.unit_system.plan_formation(world, selected, right_world_start, parameters.axis, parameters.spacing, parameters.facing)
+	else:
+		var data := {"position": right_world_start}
+		var checked: Dictionary = world.unit_system.validate_order(world, selected, "move", data)
+		formation_preview = {"ok": bool(checked.ok), "reason": String(checked.reason), "allocations": data.get("_allocations", {})}
+	formation_preview["drag_start"] = right_world_start
+	formation_preview["drag_end"] = viewport_to_grid(point)
+	view.queue_redraw()
+
+func _finish_right_drag(point: Vector2) -> void:
+	if not right_dragging: return
+	if _over_hud(point) or pause_overlay.visible or result_overlay.visible:
+		right_dragging = false; formation_preview.clear(); return
+	_update_formation_preview(point)
+	var valid := bool(formation_preview.get("ok", false))
+	var reason := String(formation_preview.get("reason", "队形无法安排"))
+	var data := {"position": right_world_start}
+	if right_start.distance_to(point) > 8.0 and selected.size() > 1: data["formation"] = _formation_parameters(point)
+	right_dragging = false; formation_preview.clear()
+	if valid: _send("move", data)
+	else: show_toast(reason, 4.0)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -175,7 +264,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			_toggle_pause()
 			get_viewport().set_input_as_handled()
 		elif event.keycode == KEY_ESCAPE:
-			if aim_station >= 0:
+			if right_dragging:
+				right_dragging = false; formation_preview.clear()
+			elif aim_station >= 0:
 				aim_station = -1
 				show_toast("已取消轰击瞄点")
 			else:
@@ -248,124 +339,76 @@ func _build_hud() -> void:
 	theme.set_stylebox("hover", "OptionButton", _style(Color("48604e"), ACCENT, 6))
 	hud.theme = theme
 	top = _panel(hud)
-	var row: HBoxContainer = HBoxContainer.new()
-	row.add_theme_constant_override("separation", 28)
-	top.add_child(row)
-	var brand: VBoxContainer = VBoxContainer.new()
-	row.add_child(brand)
-	var name_label: Label = _label("RIMGATE", 22, ACCENT)
-	brand.add_child(name_label)
-	brand.add_child(_label("防线试验  /  COMBAT DEMO", 11, MUTED))
-	state_label = _label("准备部署", 16, TEXT)
-	row.add_child(state_label)
-	timer_label = _label("00:00 / 08:00", 20, TEXT)
-	row.add_child(timer_label)
-	core_label = _label("设施 1000 / 1000", 16, ACCENT)
-	row.add_child(core_label)
+	top.add_theme_stylebox_override("panel", _style(Color("1b2a27"), Color("53675a"), 5, 6))
+	var row := HBoxContainer.new(); row.add_theme_constant_override("separation", 12); top.add_child(row)
+	row.add_child(_label("RIMGATE  ·  0.3", 17, ACCENT))
+	state_label = _label("准备部署", 14, TEXT); row.add_child(state_label)
+	timer_label = _label("00:00 / 08:00", 17, TEXT); row.add_child(timer_label)
+	core_label = _label("核心 1000 / 1000", 14, ACCENT); row.add_child(core_label)
 	wave_label = _label("第 1 波 · 00:30", 14, MUTED)
-	wave_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(wave_label)
-	start_button = _button("开始防守", _start, "pause")
-	row.add_child(start_button)
-	pause_button = _button("暂停 [Space]", _toggle_pause, "pause")
-	row.add_child(pause_button)
+	wave_label.clip_text = true; wave_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL; row.add_child(wave_label)
+	start_button = _button("开始防守", _start); row.add_child(start_button)
+	pause_button = _button("暂停 [Space]", _toggle_pause); row.add_child(pause_button)
+	minimap_toggle = _button("地图", func() -> void: minimap.visible = not minimap.visible; _layout_hud()); row.add_child(minimap_toggle)
 	row.add_child(_button("菜单", _open_pause_menu))
 	bottom = _panel(hud)
-	var stack: VBoxContainer = VBoxContainer.new()
-	stack.add_theme_constant_override("separation", 10)
-	bottom.add_child(stack)
-	var people: HBoxContainer = HBoxContainer.new()
-	people.add_theme_constant_override("separation", 8)
-	stack.add_child(people)
+	bottom.add_theme_stylebox_override("panel", _style(Color("1b2a27"), Color("53675a"), 5, 6))
+	var stack := VBoxContainer.new(); stack.add_theme_constant_override("separation", 4); bottom.add_child(stack)
+	var people := HBoxContainer.new(); people.add_theme_constant_override("separation", 6); stack.add_child(people)
 	for id in range(1, 7):
-		var card: Button = _button("%02d\n待命" % id, _unit_card_pressed.bind(id))
-		card.custom_minimum_size = Vector2(112, 62)
-		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		people.add_child(card)
-		unit_buttons.append(card)
-		var health := ProgressBar.new()
-		health.show_percentage = false
-		health.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var card: Button = _button("%02d  ·  100%%  ·  30发\n待命" % id, _unit_card_pressed.bind(id))
+		card.custom_minimum_size = Vector2(100, 54); card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		card.add_theme_font_size_override("font_size", 14)
+		card.add_theme_stylebox_override("normal", _style(Color("2c3d35"), Color("53675a"), 4, 4))
+		card.add_theme_stylebox_override("hover", _style(Color("405748"), ACCENT, 4, 4))
+		card.add_theme_stylebox_override("pressed", _style(Color("4e6856"), ACCENT, 4, 4))
+		people.add_child(card); unit_buttons.append(card)
+		var health := ProgressBar.new(); health.show_percentage = false; health.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		health.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
-		health.offset_left = 9; health.offset_right = -9
-		health.offset_top = -7; health.offset_bottom = -4
-		health.add_theme_stylebox_override("background", _style(Color("1d2c29"), Color.TRANSPARENT, 2, 0))
+		health.offset_left = 6; health.offset_right = -6; health.offset_top = -6; health.offset_bottom = -3
+		health.add_theme_stylebox_override("background", _style(Color("16251f"), Color.TRANSPARENT, 2, 0))
 		health.add_theme_stylebox_override("fill", _style(Color("8ac6a9"), Color.TRANSPARENT, 2, 0))
-		card.add_child(health)
-		health_bars.append(health)
-	var actions: HBoxContainer = HBoxContainer.new()
-	actions.add_theme_constant_override("separation", 8)
-	stack.add_child(actions)
-	selection_label = _label("请选择守军", 14, MUTED)
-	selection_label.custom_minimum_size.x = 110
-	actions.add_child(selection_label)
-	draft_button = _button("解除征召", _toggle_draft)
-	actions.add_child(draft_button)
-	actions.add_child(_button("停止 [X]", _stop, "stop"))
-	posture_option = OptionButton.new()
-	posture_option.focus_mode = Control.FOCUS_NONE
-	posture_option.custom_minimum_size = Vector2(124, 36)
-	for text in ["自动姿态", "站立", "蹲伏", "卧倒"]: posture_option.add_item(text)
-	for index in range(1, 4):
-		posture_option.set_item_icon(index, load("res://assets/icons/%s.svg" % ["stand", "crouch", "prone"][index - 1]))
-	posture_option.item_selected.connect(func(index: int) -> void: _send("posture", {"value": index - 1}))
+		card.add_child(health); health_bars.append(health)
+	var actions := HBoxContainer.new(); actions.add_theme_constant_override("separation", 6); stack.add_child(actions)
+	selection_label = _label("请选择守军", 14, MUTED); selection_label.custom_minimum_size.x = 100; actions.add_child(selection_label)
+	draft_button = _button("解除征召", _toggle_draft); actions.add_child(draft_button)
+	stop_button = _button("停止 [X]", _stop); actions.add_child(stop_button)
+	posture_option = _options(["自动姿态", "站立", "蹲伏", "卧倒", "姿态：混合"], 4)
+	posture_option.item_selected.connect(func(index: int) -> void:
+		if index < 4: _send("posture", {"value": index - 1}))
 	actions.add_child(posture_option)
-	style_option = OptionButton.new()
-	style_option.focus_mode = Control.FOCUS_NONE
-	style_option.custom_minimum_size = Vector2(124, 36)
-	for text in ["压制作战", "常规作战", "谨慎作战"]: style_option.add_item(text)
-	style_option.select(1)
-	for index in range(3):
-		style_option.set_item_icon(index, load("res://assets/icons/%s.svg" % ["suppress", "normal", "cautious"][index]))
-	style_option.item_selected.connect(func(index: int) -> void: _send("style", {"value": index}))
+	style_option = _options(["压制作战", "常规作战", "谨慎作战", "风格：混合"], 3); style_option.select(1)
+	style_option.item_selected.connect(func(index: int) -> void:
+		if index < 3: _send("style", {"value": index}))
 	actions.add_child(style_option)
-	fire_button = _button("轰击 [F]", _begin_fire, "attack")
-	actions.add_child(fire_button)
-	var instruction: Label = _label("左键 / 框选  ·  Shift 增选  ·  右键移动 / 操控 / 救援  ·  WASD / 中键拖动  ·  滚轮缩放", 13, MUTED)
-	stack.add_child(instruction)
-	alert_button = _button("", _locate_alert)
-	alert_button.custom_minimum_size.y = 24
-	alert_button.add_theme_font_size_override("font_size", 13)
-	alert_button.visible = false
-	stack.add_child(alert_button)
+	fire_control_option = _options(["自由开火", "停火", "火控：混合"], 2)
+	fire_control_option.item_selected.connect(func(index: int) -> void:
+		if index < 2: _set_fire_control(index == 1))
+	actions.add_child(fire_control_option)
+	target_policy_option = _options(["严格锁定", "优先攻击", "锁定：混合"], 2)
+	target_policy_option.item_selected.connect(func(index: int) -> void:
+		if index < 2: _set_target_policy("strict" if index == 0 else "priority"))
+	actions.add_child(target_policy_option)
+	fire_button = _button("轰击 [F]", _begin_fire); actions.add_child(fire_button)
+	var help := _label("右键拖队列 · WASD平移 · 滚轮缩放", 13, MUTED); help.clip_text = true; help.size_flags_horizontal = Control.SIZE_EXPAND_FILL; actions.add_child(help)
 	inspector = _panel(hud)
-	var detail: VBoxContainer = VBoxContainer.new()
-	detail.add_theme_constant_override("separation", 8)
-	inspector.add_child(detail)
-	title_label = _label("守住核心设施", 19, ACCENT)
-	detail.add_child(title_label)
-	combat_state_label = _label("战场待命", 16, Color("d4dcbe"))
-	detail.add_child(combat_state_label)
-	combat_progress = ProgressBar.new()
-	combat_progress.show_percentage = false
-	combat_progress.custom_minimum_size.y = 5
-	combat_progress.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	inspector.add_theme_stylebox_override("panel", _style(Color("1d2d28"), Color("53675a"), 5, 10))
+	var detail := VBoxContainer.new(); detail.add_theme_constant_override("separation", 6); inspector.add_child(detail)
+	title_label = _label("", 18, ACCENT); detail.add_child(title_label)
+	combat_state_label = _label("", 14, Color("d4dcbe")); combat_state_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART; detail.add_child(combat_state_label)
+	combat_progress = ProgressBar.new(); combat_progress.show_percentage = false; combat_progress.custom_minimum_size.y = 4; combat_progress.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	combat_progress.add_theme_stylebox_override("background", _style(Color("162724"), Color.TRANSPARENT, 2, 0))
-	combat_progress.add_theme_stylebox_override("fill", _style(ACCENT, Color.TRANSPARENT, 2, 0))
-	detail.add_child(combat_progress)
-	info_label = RichTextLabel.new()
-	info_label.bbcode_enabled = true
-	info_label.fit_content = false
-	info_label.scroll_active = false
-	info_label.custom_minimum_size = Vector2(0, 210)
-	info_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	info_label.add_theme_color_override("default_color", TEXT)
-	info_label.add_theme_font_size_override("normal_font_size", 14)
-	detail.add_child(info_label)
-	minimap = MinimapView.new()
-	minimap.screen = self
-	minimap.custom_minimum_size = Vector2(300, 225)
-	hud.add_child(minimap)
-	toast_label = _label("", 16, Color("f3dfad"))
-	toast_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	toast_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	hud.add_child(toast_label)
-	popup = PopupMenu.new()
-	popup.theme = theme
-	popup.exclusive = false
-	popup.id_pressed.connect(_popup_pressed)
-	popup.window_input.connect(_popup_input)
-	add_child(popup)
+	combat_progress.add_theme_stylebox_override("fill", _style(ACCENT, Color.TRANSPARENT, 2, 0)); detail.add_child(combat_progress)
+	info_label = RichTextLabel.new(); info_label.bbcode_enabled = true; info_label.fit_content = true; info_label.scroll_active = false
+	info_label.custom_minimum_size = Vector2.ZERO; info_label.add_theme_color_override("default_color", TEXT); info_label.add_theme_font_size_override("normal_font_size", 14); detail.add_child(info_label)
+	minimap = MinimapView.new(); minimap.screen = self; minimap.visible = false; hud.add_child(minimap)
+	shot_panel = _panel(hud); shot_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	shot_panel.add_theme_stylebox_override("panel", _style(Color("162721f5"), Color("8bb79b"), 5, 10))
+	shot_label = RichTextLabel.new(); shot_label.bbcode_enabled = true; shot_label.fit_content = true; shot_label.scroll_active = false; shot_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	shot_label.add_theme_color_override("default_color", TEXT); shot_label.add_theme_font_size_override("normal_font_size", 14); shot_panel.add_child(shot_label); shot_panel.hide()
+	toast_label = _label("", 15, Color("f3dfad")); toast_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; toast_label.mouse_filter = Control.MOUSE_FILTER_IGNORE; hud.add_child(toast_label)
+	alert_button = _button("", _locate_alert); alert_button.add_theme_font_size_override("font_size", 13); alert_button.add_theme_stylebox_override("normal", _style(Color("493e2e"), Color("a68d5c"), 4, 4)); alert_button.visible = false; hud.add_child(alert_button)
+	popup = PopupMenu.new(); popup.theme = theme; popup.exclusive = false; popup.id_pressed.connect(_popup_pressed); popup.window_input.connect(_popup_input); add_child(popup)
 	pause_overlay = _make_modal("指挥暂停", false)
 	result_overlay = _make_modal("守卫结果", true)
 
@@ -393,6 +436,13 @@ func _make_modal(title: String, result: bool) -> Control:
 	else:
 		box.add_child(_label("世界时间已冻结。可以继续调整命令与镜头。", 15, MUTED))
 		box.add_child(_button("返回战场", func() -> void: pause_overlay.hide()))
+		var appearance := Button.new()
+		appearance.text = "小人外观：初版" if view.use_legacy_pawns else "小人外观：新版"
+		appearance.pressed.connect(func() -> void:
+			view.use_legacy_pawns = not view.use_legacy_pawns
+			appearance.text = "小人外观：初版" if view.use_legacy_pawns else "小人外观：新版"
+			view.queue_redraw())
+		box.add_child(appearance)
 	box.add_child(_button("重新部署", _restart))
 	box.add_child(_button("退出游戏", func() -> void: get_tree().quit()))
 	return overlay
@@ -418,7 +468,10 @@ func _style(fill: Color, border: Color, radius: int = 6, margin: int = 10) -> St
 func _button(text: String, callback: Callable, icon_name: String = "") -> Button:
 	var button: Button = Button.new()
 	button.text = text
-	button.custom_minimum_size.y = 35
+	button.custom_minimum_size.y = 30
+	button.add_theme_stylebox_override("normal", _style(Color("31443d"), Color("53695b"), 4, 5))
+	button.add_theme_stylebox_override("hover", _style(Color("48604e"), ACCENT, 4, 5))
+	button.add_theme_stylebox_override("pressed", _style(Color("5a7660"), Color("c1ebcf"), 4, 5))
 	button.focus_mode = Control.FOCUS_NONE
 	button.pressed.connect(callback)
 	if icon_name != "" and ResourceLoader.exists("res://assets/icons/%s.svg" % icon_name):
@@ -434,24 +487,24 @@ func _label(text: String, size: int, color: Color) -> Label:
 	label.add_theme_color_override("font_color", color)
 	return label
 
+func _options(labels: Array, mixed_index: int) -> OptionButton:
+	var option := OptionButton.new(); option.focus_mode = Control.FOCUS_NONE; option.custom_minimum_size = Vector2(112, 30)
+	option.add_theme_stylebox_override("normal", _style(Color("31443d"), Color("53695b"), 4, 5))
+	for text in labels: option.add_item(text)
+	option.set_item_disabled(mixed_index, true)
+	return option
+
 func _layout_hud() -> void:
-	var size: Vector2 = get_viewport_rect().size
-	top.position = Vector2(12, 10)
-	top.size = Vector2(size.x - 24, 66)
-	bottom.position = Vector2(12, size.y - 218)
-	bottom.size = Vector2(size.x - 354, 206)
-	inspector.position = Vector2(size.x - 330, 88)
-	inspector.size = Vector2(318, 360)
-	minimap.position = Vector2(size.x - 330, size.y - 254)
-	minimap.size = Vector2(318, 242)
-	toast_label.position = Vector2(20, size.y - 252)
-	toast_label.size = Vector2(size.x - 374, 28)
-	if size.x < 1420:
-		for card in unit_buttons:
-			card.custom_minimum_size.x = 92
-		selection_label.custom_minimum_size.x = 75
-		posture_option.custom_minimum_size.x = 110
-		style_option.custom_minimum_size.x = 110
+	var size := get_viewport_rect().size
+	top.position = Vector2(8, 6); top.size = Vector2(size.x - 16, 44)
+	bottom.position = Vector2(8, size.y - 118); bottom.size = Vector2(size.x - 16, 112)
+	inspector.position = Vector2(size.x - 308, 62)
+	inspector.size = Vector2(300, 0)
+	minimap.position = Vector2(size.x - 308, size.y - 356); minimap.size = Vector2(300, 225)
+	toast_label.position = Vector2(16, size.y - 151); toast_label.size = Vector2(size.x - 32, 26)
+	alert_button.position = Vector2(8, 58); alert_button.size = Vector2(350, 26)
+	for option in [posture_option, style_option, fire_control_option, target_policy_option]: option.custom_minimum_size.x = 112 if size.x >= 1400 else 100
+	minimap_toggle.text = "收起地图" if minimap.visible else "地图"
 
 func _refresh_hud() -> void:
 	var phase_name: Dictionary = {"preparing": "准备部署", "running": "防守进行中", "paused": "指挥暂停", "won": "守卫成功", "lost": "防线失守"}
@@ -472,16 +525,23 @@ func _refresh_hud() -> void:
 	pause_button.visible = world.phase != "preparing"
 	pause_button.text = "继续 [Space]" if world.phase == "paused" else "暂停 [Space]"
 	pause_button.disabled = world.phase in ["won", "lost"]
-	selection_label.text = "%d 人已选中" % selected.size() if not selected.is_empty() else "请选择守军"
-	draft_button.disabled = selected.is_empty()
-	if not selected.is_empty():
-		var u: Dictionary = world.entity(selected[0])
-		if not u.is_empty():
-			draft_button.text = "解除征召" if bool(_projected_value(int(u.id), "draft", u.drafted)) else "征召"
-			posture_option.select(int(_projected_value(int(u.id), "posture", u.posture_mode)) + 1)
-			style_option.select(int(_projected_value(int(u.id), "style", u.style)))
-	posture_option.disabled = selected.is_empty()
-	style_option.disabled = selected.is_empty()
+	var station_control: Dictionary = _selected_control_station()
+	selection_label.text = String(station_control.name) if not station_control.is_empty() else ("%d人 · 主选%02d" % [selected.size(), _primary_id()] if not selected.is_empty() else "请选择守军")
+	draft_button.disabled = selected.is_empty(); stop_button.disabled = selected.is_empty()
+	var draft_value = _selection_setting("draft", "drafted")
+	draft_button.text = "征召" if selected.is_empty() else "全部征召 · 混合" if draft_value == null else ("解除征召" if bool(draft_value) else "征召")
+	var posture_value = _selection_setting("posture", "posture_mode")
+	var style_value = _selection_setting("style", "style")
+	posture_option.select(0 if selected.is_empty() else 4 if posture_value == null else int(posture_value) + 1)
+	style_option.select(1 if selected.is_empty() else 3 if style_value == null else int(style_value))
+	posture_option.disabled = selected.is_empty(); style_option.disabled = selected.is_empty()
+	var hold_value = _station_setting(station_control, "hold_fire", false) if not station_control.is_empty() else _selection_setting("fire_control", "hold_fire")
+	var policy_value = _station_setting(station_control, "target_policy", "strict") if not station_control.is_empty() else _selection_setting("target_policy", "target_policy")
+	fire_control_option.select(0 if selected.is_empty() and station_control.is_empty() else 2 if hold_value == null else 1 if bool(hold_value) else 0)
+	target_policy_option.select(0 if selected.is_empty() and station_control.is_empty() else 2 if policy_value == null else 0 if String(policy_value) == "strict" else 1)
+	fire_control_option.disabled = selected.is_empty() and station_control.is_empty(); target_policy_option.disabled = fire_control_option.disabled
+	fire_control_option.tooltip_text = "修改所选工事自身的火控；换操作员后保留。" if not station_control.is_empty() else "修改所选人员的单兵武器火控。若需控制工事，请直接选中工事。"
+	target_policy_option.tooltip_text = "严格锁定：目标暂不可攻击时守位等待。优先攻击：目标暂不可用时可攻击其他合法目标。"
 	fire_button.disabled = _selected_mortar() < 0
 	for i in range(unit_buttons.size()):
 		var u: Dictionary = world.entity(i + 1)
@@ -494,7 +554,11 @@ func _refresh_hud() -> void:
 		var pending: String = ""
 		for order in world.pending_orders:
 			if order.ids.has(i + 1): pending = " · 待执行"
-		unit_buttons[i].text = "%02d  %d%%  · %d发\n%s%s" % [i + 1, int(maxf(0, u.hp) / u.max_hp * 100), ready_ammo, status, pending]
+		var reaction: String = "蜷缩" if bool(u.get("cower", false)) else "溃逃" if String(u.job) == "rout" else ["站", "蹲", "卧"][clampi(int(u.posture), 0, 2)]
+		var brief := "压%d · %s" % [int(u.suppression), reaction] if u.conscious and not u.dead else status
+		if float(u.bleed_rate) > 0.0 and not u.dead: brief += " · 死" + _eta_short(u)
+		elif u.job == "operate": brief += " · " + String(weapon_holder.get("name", "岗位"))
+		unit_buttons[i].text = "%02d  %d%% · %d发%s\n%s" % [i + 1, int(maxf(0, u.hp) / u.max_hp * 100), ready_ammo, " *" if pending != "" else "", brief]
 		health_bars[i].value = maxf(0, u.hp) / u.max_hp * 100
 		var icon_name: String = ""
 		if not u.conscious and not u.dead: icon_name = "downed"
@@ -503,18 +567,13 @@ func _refresh_hud() -> void:
 		elif "阻" in String(u.status): icon_name = "blocked"
 		unit_buttons[i].icon = load("res://assets/icons/%s.svg" % icon_name) if icon_name != "" else null
 		unit_buttons[i].modulate = Color("b8efd2") if selected.has(i + 1) else (Color("8a8d80") if u.dead else Color.WHITE)
-		unit_buttons[i].tooltip_text = "%s %d + %d  /  绷带 %d  /  压制 %d\n%s" % ["步枪" if weapon_holder.has("team") else String(weapon_holder.name), int(weapon_holder.loaded), int(weapon_holder.get("ammo", weapon_holder.get("reserve", 0))), int(u.bandages), int(u.suppression), u.status]
-	for holder in world.units + world.buildings:
-		var reloading: bool = float(holder.get("reload_progress", 0.0)) > 0
-		if reloading and not reload_active.get(int(holder.id), false):
-			var name: String = "reload_mg_01" if holder.get("kind", "") == "mg" else ("mortar_load_01" if holder.get("kind", "") == "mortar" else "reload")
-			_play_sound(name, -19, holder.pos, 2)
-		reload_active[int(holder.id)] = reloading
+		unit_buttons[i].tooltip_text = "%s %d + %d  /  绷带 %d  /  压制 %d\n%s" % ["步枪" if weapon_holder.has("team") else String(weapon_holder.name), int(weapon_holder.loaded), int(weapon_holder.get("ammo", weapon_holder.get("reserve", 0))), int(u.bandages), int(u.suppression), String(u.status) + "\n预计死亡：" + _death_eta(u)]
 	var critical: Dictionary = _critical_unit()
 	alert_button.visible = not critical.is_empty()
 	if not critical.is_empty():
 		alert_button.text = "⚠ %02d · %s  [点击定位]" % [int(critical.id), "伤员持续出血" if critical.bleed_rate > 0 else ("昏迷等待救援" if not critical.conscious else "弹药耗尽")]
 	_refresh_inspector()
+	_update_shot_preview()
 	if world.phase in ["won", "lost"]:
 		result_overlay.show()
 		var awake: int = 0
@@ -527,43 +586,125 @@ func _refresh_hud() -> void:
 			else: down += 1
 		result_label.text = "[font_size=25][color=%s]%s[/color][/font_size]\n\n%s\n守卫时间  %02d:%02d\n核心耐久  %d / 1000\n清醒 %d   昏迷 %d   阵亡 %d\n步枪弹 %d   机枪弹 %d   炮弹 %d\n同阵营误伤（双方） %d" % ["#b9e2c2" if world.phase == "won" else "#edae91", "守卫成功" if world.phase == "won" else "防线失守", world.result_reason, elapsed_seconds / 60, elapsed_seconds % 60, maxi(0, int(core.hp)), awake, down, dead, int(world.stats.rifle_shots), int(world.stats.mg_shots), int(world.stats.mortar_shots), int(world.stats.friendly_fire)]
 
+func _primary_id() -> int:
+	if selected.has(primary_selected): return primary_selected
+	if selected.is_empty(): return -1
+	var ids := selected.duplicate(); ids.sort(); return int(ids[0])
+
+func _selection_setting(kind: String, field: String) -> Variant:
+	if selected.is_empty(): return null
+	var reference: Variant = null
+	var first := true
+	for id in selected:
+		var u: Dictionary = world.entity(id)
+		var value = _projected_value(id, kind, u.get(field, false if field in ["hold_fire", "drafted"] else "strict" if field == "target_policy" else 0))
+		if not first and value != reference: return null
+		reference = value; first = false
+	return reference
+
+func _selected_control_station() -> Dictionary:
+	var station: Dictionary = world.entity(selected_building)
+	return station if not station.is_empty() and int(station.get("capacity", 0)) > 0 and not station.destroyed else {}
+
+func _station_setting(station: Dictionary, field: String, default: Variant) -> Variant:
+	var value: Variant = station.get(field, default)
+	for order in world.pending_orders:
+		if order.kind == "station_control" and int(order.data.get("station_id", -1)) == int(station.id): value = order.data.get(field, value)
+	return value
+
+func _set_fire_control(hold: bool) -> void:
+	var station := _selected_control_station()
+	if station.is_empty(): _send("fire_control", {"value": hold}); return
+	var response: Dictionary = world.submit_station_control(int(station.id), hold, String(_station_setting(station, "target_policy", "strict")))
+	show_toast("工事火控已安排" if response.ok else String(response.reason), 2.0); _refresh_hud()
+
+func _set_target_policy(policy: String) -> void:
+	var station := _selected_control_station()
+	if station.is_empty(): _send("target_policy", {"value": policy}); return
+	var response: Dictionary = world.submit_station_control(int(station.id), bool(_station_setting(station, "hold_fire", false)), policy)
+	show_toast("工事火控已安排" if response.ok else String(response.reason), 2.0); _refresh_hud()
+
+func _eta_short(unit: Dictionary) -> String:
+	if bool(unit.dead): return "已死亡"
+	if float(unit.bleed_rate) <= 0.0: return "稳定"
+	var seconds := maxi(0, ceili(float(unit.hp) / float(unit.bleed_rate)))
+	return "%d:%02d" % [seconds / 60, seconds % 60]
+
+func _death_eta(unit: Dictionary) -> String:
+	if unit.dead: return "已死亡"
+	if float(unit.bleed_rate) <= 0.0: return "稳定"
+	return _eta_short(unit) + " 游戏时间（仅按当前失血）"
+
 func _refresh_inspector() -> void:
 	var b: Dictionary = world.entity(selected_building) if selected_building >= 0 else {}
+	var u: Dictionary = world.entity(_primary_id()) if not selected.is_empty() else world.entity(inspected_enemy)
+	inspector.visible = not b.is_empty() or not u.is_empty()
+	if not inspector.visible: return
 	if not b.is_empty():
-		title_label.text = String(b.name)
-		_refresh_combat_status(b)
-		var crew: Array[int] = world.projected_crew(int(b.id))
+		title_label.text = String(b.name); _refresh_combat_status(b)
 		info_label.text = "耐久  [color=#b4dfbd]%d / %d[/color]\n" % [maxi(0, int(b.hp)), int(b.max_hp)]
 		if int(b.capacity) > 0:
-			info_label.text += "岗位  %d / %d  %s\n状态  %s\n" % [crew.size(), int(b.capacity), str(crew), b.status]
-			info_label.text += "弹药  %d 已装 / %d 备用\n" % [int(b.loaded), int(b.ammo)] if b.kind == "mg" else "炮弹库存  %d / %d\n" % [int(b.ammo), int(b.ammo_capacity)]
-			info_label.text += "待交付预约  %d\n\n" % int(b.supply_reserved)
-			info_label.text += "右键工事：操控 / 搬运补给\n右键敌人：指定工事目标\n" + ("按 F 指定地面落点\n单次命令发射一枚炮弹" if b.kind == "mortar" else "固定射界 120°，枪身随目标转向")
+			info_label.text += "岗位  %d / %d · %s\n弹药  %d 已装 / %d 备用\n预约补给  %d\n" % [world.projected_crew(int(b.id)).size(), int(b.capacity), str(world.projected_crew(int(b.id))), int(b.loaded), int(b.ammo), int(b.supply_reserved)]
+			info_label.text += "[color=#a5b8aa]选中工事后右键敌人指定目标" + ("；F轰击地面。" if b.kind == "mortar" else "。射界120°。") + "[/color]"
 		else:
-			if b.get("barrier_type", "") == "wall": info_label.text += "墙体 · 完全阻挡直射\n禁止穿行和翻越\n\n"
-			else: info_label.text += "高度  %.2f  /  单格屏蔽量 %.2f\n\n" % [float(b.height), float(b.get("screening_strength", b.screen_volume * 4.0))]
-			info_label.text += "耐久归零后失去遮挡与掩护。\n右键可以显式攻击建筑。"
-		return
-	var u: Dictionary = world.entity(selected[0]) if not selected.is_empty() else world.entity(inspected_enemy)
-	if not u.is_empty():
+			info_label.text += "墙体 · 完全阻挡直射与通行" if b.get("barrier_type", "") == "wall" else "高度 %.2f · 单格屏蔽 %.2f" % [float(b.height), float(b.get("screening_strength", 0.0))]
+	else:
 		_refresh_combat_status(u)
-		title_label.text = ("守军 %02d" % int(u.id)) if int(u.team) == 0 else ("重装步兵" if u.kind == "heavy" else ("侧翼队员" if u.kind == "flanker" else "敌方射手"))
-		var pose: String = ["站立", "蹲伏", "卧倒"][clampi(int(u.posture), 0, 2)]
-		info_label.text = "生命  [color=#b4dfbd]%d / %d[/color]\n压制  %d / 100  ·  稳定 %d%%\n姿态  %s  ·  %s\n步枪  %d / %d 发\n出血  [color=#e8b296]%.2f / 秒[/color]\n绷带  %d  ·  护甲 %.0f\n当前  %s\n" % [maxi(0, int(u.hp)), int(u.max_hp), int(u.suppression), int(u.stability * 100), pose, "自动" if int(u.posture_mode) < 0 else "锁定", int(u.loaded), int(u.reserve), float(u.bleed_rate), int(u.bandages), float(u.armor), u.status]
-		var holder: Dictionary = _display_weapon_holder(u)
-		if int(holder.id) != int(u.id):
-			info_label.text = info_label.text.replace("步枪  %d / %d 发" % [int(u.loaded), int(u.reserve)], "%s  %d + %d 发" % [String(holder.name), int(holder.loaded), int(holder.ammo)])
-		if hover_enemy >= 0 and int(u.team) == 0:
-			var foe: Dictionary = world.entity(hover_enemy)
-			var cover: Dictionary = world.cover_for(u, Vector2(WeaponPose.aimed_rifle(foe.pos, u.pos, int(foe.posture)).muzzle))
-			info_label.text += "\n来自悬停敌人的保护：\n" + ("完全遮挡" if cover.get("blocked", false) else "掩体拦截 %d%%" % int(float(cover.get("chance", 0)) * 100))
-		else:
-			info_label.text += "\n悬停敌人查看对应方向掩护。\n征召单位不会自行换位找掩体。"
-		return
-	title_label.text = "守住核心设施"
-	combat_state_label.text = "实时战斗 · 随时暂停指挥"
-	combat_progress.visible = false
-	info_label.text = "[color=#b7d5bd]6 人 · 2 挺机枪 · 1 门迫击炮[/color]\n\n所有设施已经预置。安排人员操作重武器，及时从补给点搬弹；救人和止血同样占用人手。\n\n坚持 8 分钟即可完成守卫。\n\n[color=#e4bb87]炮击和流弹能够伤害友军。[/color]\n救护区药品：%d" % int(world.medical_stock)
+		title_label.text = ("守军 %02d%s" % [int(u.id), " · 主选" if selected.size() > 1 else ""]) if int(u.team) == 0 else ("重装步兵" if u.kind == "heavy" else "侧翼队员" if u.kind == "flanker" else "敌方射手")
+		var posture: String = "蜷缩" if bool(u.get("cower", false)) else ["站立", "蹲伏", "卧倒"][clampi(int(u.posture), 0, 2)]
+		var holder := _display_weapon_holder(u)
+		info_label.text = "生命  [color=#b4dfbd]%d / %d[/color]\n失血  %.2f / 秒\n预计死亡 %s\n压制  %d / 100 · 稳定 %d%%\n姿态  %s · %s\n%s  %d 已装 / %d 备用\n绷带 %d · 护甲 %.0f\n" % [maxi(0, int(u.hp)), int(u.max_hp), float(u.bleed_rate), _eta_short(u) + (" 游戏时间" if float(u.bleed_rate) > 0.0 else ""), int(u.suppression), int(u.stability * 100), posture, "自动" if int(u.posture_mode) < 0 else "手动", "步枪" if holder.has("team") else String(holder.name), int(holder.loaded), int(holder.get("reserve", holder.get("ammo", 0))), int(u.bandages), float(u.armor)]
+		if String(u.get("action_pause_reason", "")) != "": info_label.text += "[color=#e8b296]" + String(u.action_pause_reason) + "[/color]\n"
+		info_label.text += "[color=#a5b8aa]死亡估计仅含当前失血；悬停敌人看最终概率，Alt看明细。[/color]"
+	_resize_inspector.call_deferred()
+
+func _resize_inspector() -> void:
+	if not is_instance_valid(inspector): return
+	inspector.size = Vector2(300, 0)
+
+func _invalidate_shot_cache() -> void:
+	shot_cache_key = ""; shot_cache.clear()
+	if is_instance_valid(shot_panel): shot_panel.hide()
+
+func _update_shot_preview() -> void:
+	if not is_instance_valid(shot_panel): return
+	var holder := selected_building if not _selected_control_station().is_empty() else _primary_id()
+	var primary: Dictionary = world.entity(_primary_id())
+	if selected_building < 0 and not primary.is_empty(): holder = int(_display_weapon_holder(primary).id)
+	if hover_enemy < 0 or holder < 0 or _over_hud(_cursor_position()): shot_panel.hide(); return
+	var key := "%d:%d:%d" % [holder, hover_enemy, world.step_index]
+	var now := Time.get_ticks_msec()
+	if key != shot_cache_key and now - shot_query_at >= 100:
+		shot_cache = world.combat_system.query_shot(world, holder, hover_enemy)
+		shot_cache_key = key; shot_query_at = now; shot_query_count += 1
+	if shot_cache.is_empty() or not shot_cache_key.begins_with("%d:%d:" % [holder, hover_enemy]): shot_panel.hide(); return
+	var source: Dictionary = world.entity(holder)
+	var name := "守军%02d" % holder if source.has("team") else String(source.get("name", "工事"))
+	if selected_building < 0 and not primary.is_empty() and holder != int(primary.id): name = "守军%02d / %s" % [int(primary.id), name]
+	var details := alt_details or Input.is_key_pressed(KEY_ALT)
+	var text := "[color=#a5b8aa]%s → 敌人%d%s[/color]\n" % [name, hover_enemy, " · 主选" if selected.size() > 1 and selected_building < 0 else ""]
+	if not bool(shot_cache.get("ok", false)):
+		text += "[color=#e8b296]无法开火：%s[/color]" % String(shot_cache.get("reason", "条件不满足"))
+	else:
+		text += ("目标位于爆炸范围内的概率" if shot_cache.get("kind", "direct") == "mortar" else "最终单发命中率") + "  [b][color=#b9e7c7]%.1f%%[/color][/b]" % (float(shot_cache.probability) * 100.0)
+		if not bool(shot_cache.get("ready", false)): text += "\n[color=#e8c59a]尚未就绪：%s[/color]" % String(shot_cache.get("ready_reason", ""))
+		if bool(shot_cache.get("friendly_fire_risk", false)): text += "\n[color=#edac88]⚠ 枪线 / 射偏范围有友伤风险[/color]"
+		if details:
+			for factor in shot_cache.get("factors", []): text += "\n%s  %.3f" % [String(factor.name), float(factor.value)]
+			for index in range(shot_cache.get("segments", []).size()):
+				var segment: Dictionary = shot_cache.segments[index]
+				text += "\n掩体段%d · 拦截%.1f%% · 入口%.2f格" % [index + 1, float(segment.chance) * 100.0, float(segment.entry_distance)]
+			for blocker in shot_cache.get("blockers", []): text += "\n中途%s%d%s" % ["人员" if blocker.kind == "unit" else "墙体", int(blocker.entity_id), " · 友军" if blocker.get("friendly", false) else ""]
+			text += "\n贴近友军豁免：%s" % str(shot_cache.get("exempt_allies", []))
+			text += "\n[color=#a5b8aa]当前状态快照；不预测飞行期间移动。[/color]"
+		else: text += "\n[color=#a5b8aa]" + ("当前脚点，不预测移动 · " if shot_cache.get("kind", "direct") == "mortar" else "") + "按住 Alt 查看计算明细[/color]"
+	shot_label.text = text
+	shot_panel.size = Vector2(440 if details else 310, 0)
+	var size := get_viewport_rect().size
+	var point := _cursor_position() + Vector2(20, 20)
+	point.x = clampf(point.x, 8, maxf(8, size.x - shot_panel.size.x - 8))
+	point.y = clampf(point.y, 58, maxf(58, size.y - 126 - shot_panel.get_combined_minimum_size().y))
+	shot_panel.position = point; shot_panel.show()
 
 func _display_weapon_holder(unit: Dictionary) -> Dictionary:
 	if unit.get("job", "") == "operate":
@@ -599,8 +740,11 @@ func _locate_alert() -> void:
 	var unit: Dictionary = _critical_unit()
 	if not unit.is_empty(): _unit_card_pressed(int(unit.id))
 
+func _cursor_position() -> Vector2:
+	return tactical_cursor if cursor_observed else get_viewport().get_mouse_position()
+
 func mouse_world() -> Vector2:
-	return get_global_mouse_position() / GRID
+	return viewport_to_grid(_cursor_position())
 
 func _pick_unit(point: Vector2) -> Dictionary:
 	var nearest: Dictionary = {}
@@ -620,6 +764,7 @@ func _pick_building(point: Vector2) -> Dictionary:
 	return {}
 
 func _finish_selection(mouse: Vector2, additive: bool) -> void:
+	var personnel_selected := false
 	var grid_point: Vector2 = viewport_to_grid(mouse)
 	if not additive:
 		selected.clear()
@@ -629,17 +774,24 @@ func _finish_selection(mouse: Vector2, additive: bool) -> void:
 		var box: Rect2 = Rect2(drag_start, mouse - drag_start).abs()
 		for u in world.units:
 			if int(u.team) == 0 and not u.dead and box.has_point(get_viewport().get_canvas_transform() * (view.unit_position(u) * GRID)):
+				personnel_selected = true
 				if not selected.has(int(u.id)): selected.append(int(u.id))
 	else:
 		var u: Dictionary = _pick_unit(grid_point)
 		if not u.is_empty():
 			if int(u.team) == 0:
+				personnel_selected = true
 				if additive and selected.has(int(u.id)): selected.erase(int(u.id))
 				else: selected.append(int(u.id))
 			else: inspected_enemy = int(u.id)
 		else:
 			var b: Dictionary = _pick_building(grid_point)
-			if not b.is_empty(): selected_building = int(b.id)
+			if not b.is_empty(): selected_building = int(b.id); selected.clear()
+	if personnel_selected: selected_building = -1; inspected_enemy = -1
+	_invalidate_shot_cache()
+	if drag_start.distance_to(mouse) > 7:
+		var ordered := selected.duplicate(); ordered.sort(); primary_selected = int(ordered[0]) if not ordered.is_empty() else -1
+	elif not selected.is_empty(): primary_selected = int(selected.back())
 	_refresh_hud()
 	hud.queue_redraw()
 
@@ -648,6 +800,8 @@ func _select_unit(id: int, additive: bool = false) -> void:
 	if not selected.has(id): selected.append(id)
 	selected_building = -1
 	inspected_enemy = -1
+	primary_selected = id
+	_invalidate_shot_cache()
 	_refresh_hud()
 
 func _unit_card_pressed(id: int) -> void:
@@ -687,7 +841,8 @@ func _right_click(point: Vector2, screen_point: Vector2) -> void:
 		return
 	var b: Dictionary = _pick_building(point)
 	if not b.is_empty():
-		selected_building = int(b.id)
+		# A context target is not a selection. Only explicit left selection
+		# makes later enemy clicks target this station.
 		popup.clear(); popup_actions.clear()
 		if int(b.capacity) > 0:
 			var crew: Array[int] = world.projected_crew(int(b.id))
@@ -800,9 +955,8 @@ func _stop() -> void:
 	_send("stop")
 
 func _toggle_draft() -> void:
-	if selected.is_empty(): return
-	var u: Dictionary = world.entity(selected[0])
-	_send("draft", {"value": not bool(_projected_value(int(u.id), "draft", u.drafted))})
+	var current = _selection_setting("draft", "drafted")
+	_send("draft", {"value": true if current == null else not bool(current)})
 
 func _projected_value(id: int, kind: String, current: Variant) -> Variant:
 	var value: Variant = current
@@ -860,6 +1014,7 @@ func _restart() -> void:
 	popup_revision += 1
 	selecting = false
 	panning = false
+	right_dragging = false; formation_preview.clear(); primary_selected = -1; shot_cache.clear(); shot_cache_key = ""; shot_panel.hide()
 	pause_overlay.hide()
 	result_overlay.hide()
 	camera.position = Vector2(32, 33) * GRID
@@ -895,7 +1050,13 @@ func _check_events() -> void:
 			"damage":
 				if int(event.get("target_team", 1)) == 0 and String(event.get("weapon_kind", "")) in ["blast", "melee"]:
 					_queue_sound(event, "hit", -23, 2)
+			"reload_started", "reload_stage", "reload_complete":
+				var holder: Dictionary = world.entity(int(event.get("entity_id", -1)))
+				var cue: String = "mortar_load_01" if holder.get("kind", "") == "mortar" else "reload_mg_01" if holder.get("kind", "") == "mg" else "reload"
+				_queue_sound(event, cue if event.type != "reload_complete" else "station_handle_01", -20 if event.type == "reload_started" else -26, 2)
 			"unit_state_changed":
+				if event.get("state", "") in ["suppressed", "cowering"] and bool(event.get("interrupted", false)):
+					_queue_sound(event, "bandage_01" if event.get("state", "") == "cowering" else "step_02", -25, 2)
 				if event.get("state", "") in ["unconscious", "routed"]:
 					var unit: Dictionary = world.entity(int(event.get("unit_id", -1)))
 					if unit.get("team", 1) == 0:
@@ -970,7 +1131,7 @@ func _play_sound(name: String, volume: float = -13, position: Vector2 = Vector2.
 	player.stream_paused = world.phase in ["preparing", "paused"] and priority < 5
 
 func _over_hud(point: Vector2) -> bool:
-	return top.get_global_rect().has_point(point) or bottom.get_global_rect().has_point(point) or inspector.get_global_rect().has_point(point) or minimap.get_global_rect().has_point(point)
+	return top.get_global_rect().has_point(point) or bottom.get_global_rect().has_point(point) or (inspector.visible and inspector.get_global_rect().has_point(point)) or (minimap.visible and minimap.get_global_rect().has_point(point)) or (alert_button.visible and alert_button.get_global_rect().has_point(point))
 
 func _zoom_at(point: Vector2, factor: float) -> void:
 	var before: Vector2 = viewport_to_grid(point) * GRID
@@ -1000,6 +1161,7 @@ func apply_review_orders() -> void:
 	world.submit([5], "move", {"position": Vector2(25.5, 22.5)})
 	world.submit([6], "move", {"position": Vector2(36.5, 22.5)})
 	selected = [1, 2, 3, 4, 5, 6]
+	primary_selected = 1
 	world.start_battle()
 	_sync_pause()
 

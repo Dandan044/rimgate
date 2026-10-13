@@ -2,7 +2,9 @@
 
 Godot 4.7.2 / Windows x64。原创俯视战术防御 Demo，6 名守军在一张固定地图上守护核心 8 分钟，迎击 3 波敌人。经营、建设和长期存档留待后续版本。
 
-当前为第二版 Demo v0.2；范围见 [第二版规划](DEMO_V2_PLAN.md)，验证结果见 [第二版验收](docs/V2_TEST_REPORT.md)，完整游戏方向见 [设计记录](GAME_DESIGN.md)。[第一版规划](DEMO_PLAN.md)与历史测试报告保留作对照。
+当前源码处于第三版 Demo v0.3 验收阶段；范围见 [第三版规划](DEMO_V3_PLAN.md)，验收进度见 [第三版验收](docs/V3_TEST_REPORT.md)，操作见 [第三版游玩说明](docs/PLAY_V3.md)。完整游戏方向见 [设计记录](GAME_DESIGN.md)。[第二版规划](DEMO_V2_PLAN.md)、[第二版验收](docs/V2_TEST_REPORT.md)及第一版历史资料保留。
+
+第三版已接入连续掩体、人体挡弹/友方贴近豁免、分级姿态压制、自动预装、最终概率预览、右拖队形、紧凑HUD及定稿美术。候选程序的最终交付以测试报告与版本清单为准，保留第二版可玩包。
 
 ## 游玩
 
@@ -24,7 +26,9 @@ Godot 4.7.2 / Windows x64。原创俯视战术防御 Demo，6 名守军在一张
 
 ## 源工程
 
-用 Godot **4.7.2 标准版**导入 `project.godot`，按 F6/F5 运行。使用 Compatibility 渲染器和纯 GDScript，不需要 .NET。当前人物与工事使用原创 SVG 图集，旧 PNG 仅保留作回退；素材来源见 [ASSETS](docs/ASSETS.md)。
+用 Godot **4.7.2 标准版**导入 `project.godot`，按 F6/F5 运行。使用 Compatibility 渲染器和纯 GDScript，不需要 .NET。小人默认使用新AI部件美术，工事保留原创SVG；暂停菜单的“小人外观”按钮可切回完整初版小人。素材来源见 [ASSETS](docs/ASSETS.md)。
+
+本地小人美术预览版位于 `build/pawn_art_demo/Rimgate.exe`，同目录的 `Rimgate.pck` 必须保留。本轮更换人物美术与显示层，并按新身形同步校准步枪挂点和真实枪口；未修改战斗数值、寻路、掩体算法、占位或AI行为。身体、上衣、裤装、防弹衣和头盔独立叠加，细节与剩余限制见 [分层约定](docs/PAWN_LAYER_CONTRACT.md)。短时实机动图与报告位于 `build/pawn_art_evidence/`，说明见 [小人美术接入](docs/PAWN_ART_UPDATE.md)。
 
 固定60Hz仿真位于`scripts/sim`，界面与表现位于`scripts/ui`。活动单位独占格子，格心之间连续移动，显示帧继续插值；画面和音效不决定伤害，固定种子104729。美术与实时连续感的参考依据见 [调研记录](docs/REFERENCE_REVIEW.md)，新增声音来源见 [音频记录](docs/AUDIO_V2.md)。
 

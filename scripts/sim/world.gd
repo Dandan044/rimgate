@@ -109,6 +109,10 @@ func submit(ids: Array, kind: String, data: Dictionary = {}) -> Dictionary:
 	var checked: Dictionary
 	if kind == "station_attack":
 		checked = combat_system.validate_station_attack(self, int(data.get("station_id", -1)), int(data.get("target_id", -1)))
+	elif kind == "station_control":
+		var station: Dictionary = entity(int(data.get("station_id", -1)))
+		var valid: bool = not station.is_empty() and int(station.get("capacity", 0)) > 0 and not bool(station.get("destroyed", false)) and float(station.get("hp", 0.0)) > 0.0
+		checked = {"ok": valid and data.get("hold_fire") is bool and String(data.get("target_policy", "")) in ["strict", "priority"], "reason": "工事或火控设置无效"}
 	else:
 		checked = unit_system.validate_order(self, ids, kind, data)
 	if not checked.get("ok", false):
@@ -120,6 +124,9 @@ func submit(ids: Array, kind: String, data: Dictionary = {}) -> Dictionary:
 
 func submit_station_attack(station_id: int, target_id: int) -> Dictionary:
 	return submit([], "station_attack", {"station_id": station_id, "target_id": target_id})
+
+func submit_station_control(station_id: int, hold_fire: bool, target_policy: String = "strict") -> Dictionary:
+	return submit([], "station_control", {"station_id": station_id, "hold_fire": hold_fire, "target_policy": target_policy})
 
 func start_battle() -> void:
 	if phase == "preparing": phase = "running"; emit_event("battle_started")
@@ -135,6 +142,12 @@ func step(dt: float = Config.FIXED_DT) -> void:
 		if order.kind == "station_attack":
 			var outcome: Dictionary = combat_system.request_station_attack(self, int(order.data.station_id), int(order.data.target_id))
 			if not outcome.get("ok", false): emit_event("order_rejected", {"reason": outcome.get("reason", "工事攻击不可执行")})
+		elif order.kind == "station_control":
+			var station: Dictionary = entity(int(order.data.station_id))
+			if not station.is_empty() and not bool(station.destroyed) and float(station.hp) > 0.0:
+				station.hold_fire = bool(order.data.hold_fire)
+				station.target_policy = String(order.data.target_policy)
+				emit_event("fire_control_changed", {"entity_id": int(station.id), "hold_fire": bool(station.hold_fire), "target_policy": String(station.target_policy), "pos": station.pos})
 		else:
 			unit_system.apply_order(self, order.ids, order.kind, order.data)
 	step_index += 1; time_s += dt
@@ -149,6 +162,7 @@ func step(dt: float = Config.FIXED_DT) -> void:
 			b.destroyed = true; navigation_dirty = true
 			stats.ammo_destroyed += int(b.ammo) + int(b.loaded)
 			b.ammo = 0; b.loaded = 0; b.reload_reserved = 0; b.supply_reserved = 0; b.fire_requested = false
+			b["reload_stage"] = 0; b["reload_paused"] = false; b.reload_progress = 0.0
 			for id in b.crew.duplicate():
 				var crew_unit := entity(int(id))
 				if not crew_unit.is_empty(): unit_system.release_station(self, crew_unit)

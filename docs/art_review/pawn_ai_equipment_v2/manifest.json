@@ -1,0 +1,117 @@
+{
+  "status": "front static art review; runtime unchanged",
+  "source_pixels_unchanged": true,
+  "identity_axes": [
+    "features",
+    "face",
+    "hair",
+    "body"
+  ],
+  "equipment_independent": true,
+  "head_socket": [
+    256,
+    355
+  ],
+  "foot_anchor": [
+    256,
+    746
+  ],
+  "combinations": [
+    {
+      "file": "01-base.svg",
+      "features": 0,
+      "face": 0,
+      "hair": 0,
+      "body": 0,
+      "outfit": "base"
+    },
+    {
+      "file": "01-light.svg",
+      "features": 0,
+      "face": 0,
+      "hair": 0,
+      "body": 0,
+      "outfit": "light"
+    },
+    {
+      "file": "01-standard.svg",
+      "features": 0,
+      "face": 0,
+      "hair": 0,
+      "body": 0,
+      "outfit": "standard"
+    },
+    {
+      "file": "01-heavy.svg",
+      "features": 0,
+      "face": 0,
+      "hair": 0,
+      "body": 0,
+      "outfit": "heavy"
+    },
+    {
+      "file": "02-base.svg",
+      "features": 1,
+      "face": 1,
+      "hair": 1,
+      "body": 1,
+      "outfit": "base"
+    },
+    {
+      "file": "02-light.svg",
+      "features": 1,
+      "face": 1,
+      "hair": 1,
+      "body": 1,
+      "outfit": "light"
+    },
+    {
+      "file": "02-standard.svg",
+      "features": 1,
+      "face": 1,
+      "hair": 1,
+      "body": 1,
+      "outfit": "standard"
+    },
+    {
+      "file": "02-heavy.svg",
+      "features": 1,
+      "face": 1,
+      "hair": 1,
+      "body": 1,
+      "outfit": "heavy"
+    },
+    {
+      "file": "03-base.svg",
+      "features": 2,
+      "face": 2,
+      "hair": 2,
+      "body": 2,
+      "outfit": "base"
+    },
+    {
+      "file": "03-light.svg",
+      "features": 2,
+      "face": 2,
+      "hair": 2,
+      "body": 2,
+      "outfit": "light"
+    },
+    {
+      "file": "03-standard.svg",
+      "features": 2,
+      "face": 2,
+      "hair": 2,
+      "body": 2,
+      "outfit": "standard"
+    },
+    {
+      "file": "03-heavy.svg",
+      "features": 2,
+      "face": 2,
+      "hair": 2,
+      "body": 2,
+      "outfit": "heavy"
+    }
+  ]
+}

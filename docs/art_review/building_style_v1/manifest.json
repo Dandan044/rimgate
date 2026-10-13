@@ -1,0 +1,38 @@
+{
+	"adjacency_prototype": "independent varied bag sprites in overlapping upper/lower courses; horizontal and vertical branches use directional staggered layouts with one junction center; wall union footprint with external-only outline",
+	"connection_cases": [
+		"单格",
+		"横向连续",
+		"纵向连续",
+		"转角",
+		"T形交汇",
+		"十字交汇"
+	],
+	"generator": "builtin image_gen source assets; native Godot registration/composition",
+	"neighbor_directions": [
+		"north",
+		"east",
+		"south",
+		"west"
+	],
+	"outputs": [
+		"1-field-military.png",
+		"2-modular-industrial.png",
+		"3-ancient-technology.png",
+		"sandbag-refinement-v4.png"
+	],
+	"production_assets_modified": false,
+	"prompts": "prompts.json",
+	"purpose": "Building style and same-type adjacency art review; not gameplay",
+	"review_status": "art direction approved by user; field military buildings and sandbag v4 selected; production integration pending",
+	"approved_building_style": "1-field-military",
+	"approved_sandbag_revision": "sandbag-refinement-v4.png",
+	"approved_date": "2026-10-13",
+	"same_layout": true,
+	"sandbag_prompt": "sandbags-lumpy-prompt.txt",
+	"sandbag_source": "source/sandbags-lumpy-v3.png",
+	"selected_ground": "terrain_style_v1 A",
+	"source_atlases_unchanged": true,
+	"user_reference": "reference-sandbags.png, style reference only; not extracted as game art",
+	"weapon_core_animation_layers": "pending selected style; upper concept sprites are static whole shapes"
+}

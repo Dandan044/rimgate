@@ -11,6 +11,9 @@ const MORTAR_FLIGHT_TIME := 3.0
 const BLAST_RADIUS := 4.0
 const QUERY_CELL_SIZE := 4.0
 const QUERY_PADDING := 0.001
+const SEGMENT_TOLERANCE := 0.0001
+const FRIENDLY_LOCAL_RADIUS := 1.4142135623730951
+const IDLE_RELOAD_DELAY := 1.5
 
 # The exhaustive path remains available for deterministic equivalence checks.
 var use_spatial_index: bool = true
@@ -49,7 +52,7 @@ func hit_probability(shooter: Dictionary, target: Dictionary, weapon: Dictionary
 	var distance: float = Vector2(shooter.pos).distance_to(Vector2(target.pos))
 	var ratio: float = clampf(distance / float(weapon.range), 0.0, 1.0)
 	var accuracy: float = lerpf(float(weapon.accuracy_near), float(weapon.accuracy_far), ratio)
-	var volume: float = 1.0 if _is_building(target) else float(Config.VOLUMES[_posture(target)])
+	var volume: float = 1.0 if _is_building(target) else _volume(target)
 	var q: float = clampf(float(shooter.suppression) / 100.0, 0.0, 1.0)
 	var stability: float = clampf(float(shooter.stability), 0.0, 1.0)
 	var style: int = clampi(int(shooter.style), 0, 2)
@@ -58,25 +61,11 @@ func hit_probability(shooter: Dictionary, target: Dictionary, weapon: Dictionary
 
 func cover_for(world, unit: Dictionary, from: Vector2) -> Dictionary:
 	var result: Dictionary = {"chance": 0.0, "blocked": false, "building_id": -1, "cell": Vector2i(-1, -1), "obstacles": []}
-	var position: Vector2 = unit.pos
-	if from.distance_squared_to(position) < EPS * EPS:
-		return result
-	var obstacles: Array[Dictionary] = []
-	for b in _buildings_in_bounds(world, _segment_bounds(from, position)):
-		if not _building_alive(b) or _barrier_type(b) == "floor" or int(b.id) == int(unit.id):
-			continue
-		var intersection: Dictionary = _building_crossing(b, from, position)
-		if intersection.is_empty() or float(intersection.t) >= 1.0 - EPS:
-			continue
-		var point: Vector2 = from.lerp(position, float(intersection.t))
-		var wall: bool = _barrier_type(b) == "wall"
-		var chance: float = 1.0 if wall else cover_probability(b, float(Config.VOLUMES[_posture(unit)]), from.distance_to(point))
-		obstacles.append({"building_id": int(b.id), "cell": intersection.cell, "t": intersection.t, "chance": chance, "blocked": wall})
-	obstacles.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		return int(a.building_id) < int(b.building_id) if absf(float(a.t) - float(b.t)) < EPS else float(a.t) < float(b.t)
-	)
 	var survival: float = 1.0
+	var volume: float = _volume(unit)
+	var obstacles: Array[Dictionary] = _cover_segments(world, from, Vector2(unit.pos), -1, int(unit.id))
 	for obstacle in obstacles:
+		obstacle["chance"] = 1.0 if bool(obstacle.blocked) else cover_probability(obstacle.entity, volume, float(obstacle.entry_distance))
 		survival *= 1.0 - float(obstacle.chance)
 		if bool(obstacle.blocked): result.blocked = true
 		if int(result.building_id) < 0 and float(obstacle.chance) > 0.0:
@@ -85,6 +74,57 @@ func cover_for(world, unit: Dictionary, from: Vector2) -> Dictionary:
 	result.chance = 1.0 - survival
 	result.obstacles = obstacles
 	return result
+
+
+# Intervals follow the actual ray, not the connected building group.
+func _cover_segments(world, start: Vector2, end: Vector2, excluded_id: int = -1, target_id: int = -1) -> Array[Dictionary]:
+	var pieces: Array[Dictionary] = []
+	var length: float = start.distance_to(end)
+	if length <= EPS: return pieces
+	for building in _buildings_in_bounds(world, _segment_bounds(start, end)):
+		if not _building_alive(building) or _barrier_type(building) == "floor" or int(building.id) in [excluded_id, target_id]: continue
+		var rect: Rect2i = building.rect
+		for y in range(rect.position.y, rect.end.y):
+			for x in range(rect.position.x, rect.end.x):
+				var interval: Vector2 = _segment_rect_interval(start, end, Rect2(x, y, 1.0, 1.0))
+				if not _positive_crossing(start,end,interval): continue
+				var wall: bool = _barrier_type(building) == "wall"
+				pieces.append({"t": interval.x, "exit_t": interval.y, "entry_distance": interval.x * length, "exit_distance": interval.y * length, "building_id": int(building.id), "entity": building, "cell": Vector2i(x,y), "blocked": wall, "signature": _cover_signature(building), "members": [int(building.id)]})
+	pieces.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return int(a.building_id) < int(b.building_id) if absf(float(a.t)-float(b.t)) <= EPS else float(a.t) < float(b.t)
+	)
+	var merged: Array[Dictionary] = []
+	for piece in pieces:
+		var found: int = -1
+		for i in range(merged.size()-1, -1, -1):
+			if String(merged[i].signature) == String(piece.signature) and float(piece.entry_distance) <= float(merged[i].exit_distance) + SEGMENT_TOLERANCE:
+				found = i; break
+		if found < 0:
+			merged.append(piece)
+		else:
+			merged[found].exit_t = maxf(float(merged[found].exit_t), float(piece.exit_t))
+			merged[found].exit_distance = maxf(float(merged[found].exit_distance), float(piece.exit_distance))
+			if not merged[found].members.has(int(piece.building_id)): merged[found].members.append(int(piece.building_id))
+	return merged
+
+
+func _cover_signature(building: Dictionary) -> String:
+	var strength: float = float(building.get("screening_strength", Config.COVER_VOLUME_SCALE * float(building.get("screen_volume",0.0))))
+	return "%s|%s|%.8f|%.8f" % [_barrier_type(building), String(building.get("material", building.get("kind", ""))), float(building.get("height",0.0)), strength]
+
+
+func _segment_checked(projectile: Dictionary, segment: Dictionary) -> bool:
+	for checked in projectile.get("cover_intervals", []):
+		if String(checked.signature) == String(segment.signature) and minf(float(checked.end),float(segment.exit_distance)) + SEGMENT_TOLERANCE >= maxf(float(checked.begin),float(segment.entry_distance)):
+			return true
+	return false
+
+
+func _mark_segment(projectile: Dictionary, segment: Dictionary) -> void:
+	var checked: Array = projectile.get("cover_intervals", [])
+	checked.append({"begin":float(segment.entry_distance), "end":float(segment.exit_distance), "signature":String(segment.signature)})
+	projectile["cover_intervals"] = checked
+	for id in segment.members: projectile.cover_checked[int(id)] = segment.cell
 
 
 func cover_probability(building: Dictionary, target_volume: float, shooter_distance: float) -> float:
@@ -107,7 +147,7 @@ func _building_crossing(building: Dictionary, start: Vector2, end: Vector2) -> D
 		for x in range(rect.position.x, rect.end.x):
 			var cell: Vector2i = Vector2i(x, y)
 			var interval: Vector2 = _segment_rect_interval(start, end, Rect2(Vector2(cell), Vector2.ONE))
-			if interval.x < 0.0 or interval.y - interval.x <= EPS:
+			if not _positive_crossing(start,end,interval):
 				continue
 			first = minf(first, interval.x)
 			if interval.y > last + EPS:
@@ -125,13 +165,163 @@ func has_line_of_fire(world, shooter: Dictionary, target: Dictionary) -> bool:
 	for b in world.buildings:
 		if not _building_alive(b):
 			continue
-		if _barrier_type(b) == "wall" and Rect2(b.rect).has_point(origin):
+		if _barrier_type(b) == "wall" and _point_inside_rect(origin,Rect2(b.rect)):
 			return false
 		if int(b.id) == target_building_id:
 			continue
-		if _barrier_type(b) == "wall" and _segment_rect_interval(origin, destination, Rect2(b.rect)).x >= 0.0:
+		if _barrier_type(b) == "wall" and _positive_crossing(origin,destination,_segment_rect_interval(origin,destination,Rect2(b.rect))):
 			return false
 	return true
+
+
+# Geometry only: automatic posture selection can call this without advancing
+# aim, taking a random draw, or changing an intention.
+func can_fire_pose(world, shooter: Dictionary, target: Dictionary, station: Dictionary = {}) -> Dictionary:
+	if shooter.is_empty() or not _target_alive(target): return {"ok":false,"reason":"目标已失效"}
+	var posture: int = _posture(shooter)
+	if not station.is_empty() and posture > 1: return {"ok":false,"reason":"当前姿态无法操作工事"}
+	var weapon: Dictionary = Config.machine_gun() if not station.is_empty() else Config.rifle()
+	var origin: Vector2 = shooter.pos if station.is_empty() else station.pos
+	var offset: Vector2 = Vector2(target.pos)-origin
+	if not station.is_empty() and String(station.kind) == "mortar":
+		if offset.length()<8.0-EPS or offset.length()>40.0+EPS: return {"ok":false,"reason":"目标须距炮位8至40格"}
+		var mortar_pose: Dictionary = Pose.station(origin,offset.angle(),"mortar")
+		if not _muzzle_clear(world,Vector2(mortar_pose.get("pivot",origin)),Vector2(mortar_pose.muzzle)): return {"ok":false,"reason":"炮口被墙体阻挡"}
+		return {"ok":true,"reason":""}
+	if not station.is_empty() and absf(wrapf(offset.angle()-float(station.facing),-PI,PI)) > float(station.arc)*.5+EPS: return {"ok":false,"reason":"目标在工事射界之外"}
+	var pose: Dictionary = Pose.aimed_rifle(origin,Vector2(target.pos),posture) if station.is_empty() else Pose.station(origin,offset.angle(),"mg")
+	var muzzle: Vector2 = pose.muzzle
+	var pivot: Vector2 = pose.get("pivot",origin)
+	if muzzle.distance_to(Vector2(target.pos)) > float(weapon.range)+EPS: return {"ok":false,"reason":"目标超出射程"}
+	if not _muzzle_clear(world,pivot,muzzle): return {"ok":false,"reason":"枪口被墙体阻挡"}
+	var source: Dictionary = shooter.duplicate()
+	source.pos = muzzle
+	if not has_line_of_fire(world,source,target): return {"ok":false,"reason":"墙体阻挡射线"}
+	var muzzle_height: float = float(pose.get("muzzle_height",1.5 if not station.is_empty() else float(Config.HEIGHTS[posture])*.8))
+	for segment in _cover_segments(world,muzzle,Vector2(target.pos),int(station.get("id",-1)),int(target.id)):
+		if not bool(segment.blocked) and float(segment.entry_distance) <= 1.0+SEGMENT_TOLERANCE and float(segment.entity.get("height",0.0)) >= muzzle_height-EPS:
+			return {"ok":false,"reason":"低掩体高于当前枪口，无法出射"}
+	return {"ok":true,"reason":""}
+
+
+func query_shot(world, holder_id: int, target_id: int, posture_override: int = -1) -> Dictionary:
+	var result: Dictionary = {"ok":false,"reason":"请选择有效射手","ready":false,"ready_reason":"","probability":0.0,"kind":"direct","factors":[],"segments":[],"blockers":[],"exempt_allies":[],"friendly_fire_risk":false}
+	var holder: Dictionary = world.entity(holder_id)
+	var target: Dictionary = world.entity(target_id)
+	if holder.is_empty() or not _target_alive(target):
+		result.reason = "目标已失效" if not _target_alive(target) else result.reason
+		return result
+	var station: Dictionary = holder if _is_building(holder) else {}
+	var shooter: Dictionary = holder
+	if not station.is_empty():
+		if not _building_alive(station) or not String(station.kind) in ["mg","mortar"]: return result
+		var crew: Array[Dictionary] = _station_crew(world,station)
+		if crew.is_empty(): result.reason="需要先安排工事操作员"; return result
+		shooter = crew[0]
+	var source: Dictionary = shooter.duplicate()
+	if posture_override >= 0: source.posture = posture_override
+	var conditions: Dictionary = can_fire_pose(world,source,target,station)
+	result.ok = bool(conditions.ok)
+	result.reason = String(conditions.reason)
+	if not bool(result.ok): return result
+	result.ready = true
+	if not station.is_empty() and String(shooter.get("stage","")) != "station": result.ready=false; result.ready_reason="操作员尚未到岗"
+	elif bool(source.get("dead",false)) or not bool(source.get("conscious",true)): result.ready=false; result.ready_reason="射手失去行动能力"
+	elif bool(source.get("cower",false)): result.ready=false; result.ready_reason="蜷缩中，无法行动"
+	elif station.is_empty() and not _rifle_job_allowed(world,source): result.ready=false; result.ready_reason="当前工作无法使用单兵武器"
+	elif float(source.get("posture_timer",0.0)) > EPS: result.ready=false; result.ready_reason="姿态切换中"
+	elif not _action_allowed(world,source,"operate" if not station.is_empty() else "fire"): result.ready=false; result.ready_reason="当前反应或动作不允许开火"
+	elif bool(holder.get("hold_fire",false)): result.ready=false; result.ready_reason="已停火"
+	elif int(holder.get("reload_reserved",0)) > 0: result.ready=false; result.ready_reason="装填中"
+	elif int(holder.get("loaded",0)) <= 0: result.ready=false; result.ready_reason="尚未装弹"
+	elif String(holder.get("weapon_state","idle")) == "aiming": result.ready=false; result.ready_reason="正在瞄准"
+	elif float(holder.get("weapon_cooldown",0.0)) > EPS or float(holder.get("burst_rest",0.0)) > EPS: result.ready=false; result.ready_reason="武器恢复中"
+	if not station.is_empty() and String(station.kind) == "mortar":
+		var scatter: float = _mortar_scatter(shooter)
+		result.kind = "mortar"
+		result.probability = mortar_coverage_probability(scatter,BLAST_RADIUS,0.0)
+		result.factors = [{"name":"散布半径","value":scatter,"description":"均匀圆盘散布，按当前稳定度"},{"name":"爆炸半径","value":BLAST_RADIUS,"description":"目标脚点位于爆炸范围内；不预测移动"}]
+		return result
+	var position: Vector2 = source.pos if station.is_empty() else station.pos
+	var pose: Dictionary = Pose.aimed_rifle(position,Vector2(target.pos),_posture(source)) if station.is_empty() else Pose.station(position,(Vector2(target.pos)-position).angle(),"mg")
+	var muzzle: Vector2 = pose.muzzle
+	var pivot: Vector2 = pose.get("pivot",position)
+	var weapon: Dictionary = Config.rifle() if station.is_empty() else Config.machine_gun()
+	source.pos = muzzle
+	var raw: float = hit_probability(source,target,weapon)
+	var ratio: float = clampf(muzzle.distance_to(Vector2(target.pos))/float(weapon.range),0.0,1.0)
+	result.factors = [{"name":"距离基础精度","value":lerpf(float(weapon.accuracy_near),float(weapon.accuracy_far),ratio),"description":"从真实枪口到目标"},{"name":"稳定度","value":.25+.75*clampf(float(source.stability),0.0,1.0),"description":"当前快照，不预支未来瞄准收益"},{"name":"目标体积","value":1.0 if _is_building(target) else _volume(target),"description":"实际姿态及蜷缩体积"},{"name":"压制","value":1.0-.4*clampf(float(source.suppression)/100.0,0.0,1.0),"description":"射手当前压制"},{"name":"伤势","value":_injury_factor(source),"description":"射手伤势"},{"name":"作战风格","value":float(Config.STYLE_ACCURACY[clampi(int(source.style),0,2)]),"description":"与火控独立"},{"name":"发射准确率","value":raw,"description":"各精度因素相乘后限制在2%至95%"}]
+	var direction: Vector2 = (Vector2(target.pos)-muzzle).normalized()
+	var projectile: Dictionary = {"kind":String(weapon.kind),"team":int(source.team),"shooter_id":int(source.id),"target_id":target_id,"start":muzzle,"fire_reference":pivot,"source_building_id":int(station.get("id",-1))}
+	projectile["exempt_allies"] = _eligible_allies(world,projectile)
+	result.exempt_allies = projectile.exempt_allies.duplicate()
+	var path: Dictionary = _query_direct_path(world,projectile,target,muzzle,direction,float(weapon.range),pivot)
+	result.segments = path.segments
+	result.blockers = path.blockers
+	result.friendly_fire_risk = bool(path.friendly_fire_risk)
+	result.probability = (1.0 if bool(path.get("contact_target",false)) else raw)*float(path.survival) if bool(path.reaches_target) else 0.0
+	if bool(path.get("contact_target",false)): result.factors.append({"name":"枪口或出射首段接触目标","value":1.0,"description":"目标已覆盖发射点，射偏弹也会接触原目标"})
+	# Miss samples avoid the original silhouette, but can still strike friends.
+	# This deterministic inspection changes no combat RNG or world state.
+	if not bool(result.friendly_fire_risk) and raw < 1.0:
+		var limits: Vector2 = _miss_limits(muzzle,target,direction)
+		for side in [-1,1]:
+			for i in range(16):
+				var angle: float = direction.angle()+(limits.y if side>0 else limits.x)+float(side)*lerpf(.025,.16,(float(i)+.5)/16.0)
+				var miss: Dictionary = _query_direct_path(world,projectile,target,muzzle,Vector2.from_angle(angle),float(weapon.range),pivot)
+				if bool(miss.friendly_fire_risk): result.friendly_fire_risk=true; break
+			if bool(result.friendly_fire_risk): break
+	return result
+
+
+func _query_direct_path(world, projectile: Dictionary, target: Dictionary, origin: Vector2, direction: Vector2, length: float, pivot: Vector2) -> Dictionary:
+	var end: Vector2 = origin+direction*length
+	var result: Dictionary = {"survival":1.0,"reaches_target":false,"segments":[],"blockers":[],"friendly_fire_risk":false,"contact_target":false}
+	var contacts: Array[Dictionary] = []
+	for unit in world.units:
+		if bool(unit.dead) or float(unit.hp)<=0.0 or int(unit.id)==int(projectile.shooter_id): continue
+		var prefix_t: float = _moving_circle_hit(pivot,origin,Vector2(unit.pos),Vector2(unit.pos),_radius(unit))
+		if prefix_t>=0.0 and not _body_exempt(projectile,unit,pivot.lerp(origin,prefix_t)):
+			contacts.append({"distance":-1.0+prefix_t*.999,"unit":unit,"id":int(unit.id),"prefix":true})
+		var t: float = _moving_circle_hit(origin,end,Vector2(unit.pos),Vector2(unit.pos),_radius(unit))
+		if t>=0.0 and not _body_exempt(projectile,unit,origin.lerp(end,t)):
+			contacts.append({"distance":t*length,"unit":unit,"id":int(unit.id),"prefix":false})
+	contacts.sort_custom(func(a:Dictionary,b:Dictionary)->bool: return int(a.id)<int(b.id) if absf(float(a.distance)-float(b.distance))<EPS else float(a.distance)<float(b.distance))
+	var first: Dictionary = contacts[0] if not contacts.is_empty() else {}
+	var cutoff: float = float(first.distance) if not first.is_empty() else length
+	if _is_building(target):
+		var interval: Vector2 = _segment_rect_interval(origin,end,Rect2(target.rect))
+		if _positive_crossing(origin,end,interval) and interval.x*length<cutoff: cutoff=interval.x*length; result.reaches_target=true
+	elif not first.is_empty():
+		result.reaches_target=int(first.id)==int(target.id)
+		result.contact_target=bool(result.reaches_target) and float(first.distance)<=EPS
+	if not first.is_empty() and not bool(result.reaches_target):
+		result.blockers.append({"entity_id":int(first.id),"kind":"unit","distance":float(first.distance),"prefix":bool(first.prefix),"friendly":int(first.unit.team)==int(projectile.team)})
+		result.friendly_fire_risk=int(first.unit.team)==int(projectile.team)
+	for segment in _cover_segments(world,origin,end,int(projectile.get("source_building_id",-1)),int(target.id) if _is_building(target) else -1):
+		if float(segment.entry_distance)>cutoff+EPS: break
+		var protected: Dictionary = first.get("unit",{})
+		var volume: float = _volume(protected) if not protected.is_empty() else 1.0
+		var chance: float = 1.0 if bool(segment.blocked) else cover_probability(segment.entity,volume,float(segment.entry_distance))
+		var detail: Dictionary = {"building_id":int(segment.building_id),"members":segment.members.duplicate(),"cell":segment.cell,"entry_distance":float(segment.entry_distance),"exit_distance":float(segment.exit_distance),"chance":chance,"blocked":bool(segment.blocked)}
+		result.segments.append(detail)
+		result.survival=float(result.survival)*(1.0-chance)
+		if bool(segment.blocked): result.blockers.append({"entity_id":int(segment.building_id),"kind":"wall","distance":float(segment.entry_distance)}); result.reaches_target=false; result.friendly_fire_risk=false; break
+	return result
+
+
+func _mortar_scatter(gunner: Dictionary) -> float:
+	return 2.5-1.5*clampf(float(gunner.stability),0.0,1.0)
+
+
+func mortar_coverage_probability(scatter: float, blast: float, separation: float) -> float:
+	if scatter <= EPS: return 1.0 if separation < blast else 0.0
+	if separation >= scatter+blast: return 0.0
+	if separation <= absf(scatter-blast): return minf(scatter*scatter,blast*blast)/(scatter*scatter)
+	var a: float = acos(clampf((separation*separation+scatter*scatter-blast*blast)/(2.0*separation*scatter),-1.0,1.0))
+	var b: float = acos(clampf((separation*separation+blast*blast-scatter*scatter)/(2.0*separation*blast),-1.0,1.0))
+	var area: float = scatter*scatter*a+blast*blast*b-.5*sqrt(maxf(0.0,(-separation+scatter+blast)*(separation+scatter-blast)*(separation-scatter+blast)*(separation+scatter+blast)))
+	return clampf(area/(PI*scatter*scatter),0.0,1.0)
 
 
 # Misses avoid the original silhouette; moving targets and bystanders remain real.
@@ -152,6 +342,10 @@ func spawn_direct_projectile(world, shooter: Dictionary, target: Dictionary, wea
 	var projectile: Dictionary = _new_direct_projectile(world, origin, direction, int(shooter.team), int(shooter.id), int(target.id), weapon)
 	projectile["accurate"] = accurate
 	projectile["probability"] = probability
+	projectile["fire_reference"] = Vector2(shooter.get("fire_reference", shooter.pos))
+	projectile["prefix_start"] = projectile.fire_reference
+	projectile["prefix_pending"] = true
+	projectile["exempt_allies"] = _eligible_allies(world, projectile)
 	world.projectiles.append(projectile)
 	world.emit_event("weapon_fired", {"entity_id": int(shooter.get("weapon_holder_id", shooter.id)), "holder_id": int(shooter.get("weapon_holder_id", shooter.id)), "shooter_id": int(shooter.id), "target_id": int(target.id), "projectile_id": int(projectile.id), "pos": origin, "team": int(shooter.team), "weapon_kind": String(weapon.kind), "dir": direction, "aim_dir": (destination - origin).normalized()})
 	return projectile
@@ -159,7 +353,9 @@ func spawn_direct_projectile(world, shooter: Dictionary, target: Dictionary, wea
 
 func _muzzle_clear(world, base: Vector2, muzzle: Vector2) -> bool:
 	for building in _buildings_in_bounds(world, _segment_bounds(base, muzzle)):
-		if _building_alive(building) and _barrier_type(building) == "wall" and _segment_rect_interval(base, muzzle, Rect2(building.rect)).x >= 0.0:
+		if not _building_alive(building) or _barrier_type(building) != "wall": continue
+		var rect: Rect2 = Rect2(building.rect)
+		if _point_inside_rect(base,rect) or _point_inside_rect(muzzle,rect) or _positive_crossing(base,muzzle,_segment_rect_interval(base,muzzle,rect)):
 			return false
 	return true
 
@@ -209,7 +405,7 @@ func explode(world, position: Vector2, team: int, shooter_id: int = -1, projecti
 			continue
 		var barrier: float = _blast_barrier(snapshot, position, nearest, int(b.id))
 		outcomes.append({"entity": b, "damage": 150.0 * (1.0 - distance / BLAST_RADIUS) * barrier, "suppression": 0.0, "unit": false})
-	var blast: Dictionary = {"id": projectile_id, "kind": "mortar", "weapon_kind": "mortar", "team": team, "shooter_id": shooter_id, "suppression_applied": {}}
+	var blast: Dictionary = {"id": projectile_id, "kind": "mortar", "weapon_kind": "mortar", "team": team, "shooter_id": shooter_id, "pos":position, "start":position, "suppression_applied": {}}
 	world.emit_event("explosion", {"entity_id": shooter_id, "shooter_id": shooter_id, "projectile_id": projectile_id, "pos": position, "team": team, "weapon_kind": "mortar", "radius": BLAST_RADIUS, "fragment_radius": 10.0})
 	# Apply only after every victim has read the pre-damage obstacle snapshot.
 	for outcome in outcomes:
@@ -231,7 +427,7 @@ func _update_weapon_clock(holder: Dictionary, dt: float) -> void:
 
 
 func _ensure_weapon(holder: Dictionary) -> void:
-	var defaults: Dictionary = {"aim_elapsed": 0.0, "aim_fraction": 0.0, "aim_target_id": -1, "weapon_state": "idle", "weapon_facing": float(holder.get("facing", -PI / 2.0))}
+	var defaults: Dictionary = {"aim_elapsed": 0.0, "aim_fraction": 0.0, "aim_target_id": -1, "weapon_state": "idle", "weapon_facing": float(holder.get("facing", -PI / 2.0)), "hold_fire":false, "target_policy":"strict", "reload_stage":0, "idle_reload_since":-1.0, "reload_paused":false}
 	for key in defaults:
 		if not holder.has(key): holder[key] = defaults[key]
 
@@ -244,216 +440,188 @@ func _reset_aim(holder: Dictionary, state: String = "idle") -> void:
 
 
 func _update_rifle(world, u: Dictionary, dt: float) -> void:
-	if not _rifle_job_allowed(world, u):
-		_cancel_reload(u)
-		_reset_aim(u)
-		return
 	var weapon: Dictionary = Config.rifle()
-	if int(u.reload_reserved) > 0:
-		_reset_aim(u, "reloading")
-		if bool(u.forced_prone) or float(u.posture_timer) > EPS:
-			return
-		u.reload_progress = float(u.reload_progress) + dt
-		if float(u.reload_progress) + EPS < float(weapon.reload):
-			u.status = "步枪换弹 %.1f/3秒" % float(u.reload_progress)
-			return
-		var transfer: int = mini(int(u.reload_reserved), mini(int(u.reserve), int(weapon.magazine) - int(u.loaded)))
-		u.reserve = int(u.reserve) - transfer
-		u.loaded = int(u.loaded) + transfer
-		_cancel_reload(u)
-		u.burst_left = 0
-	if int(u.loaded) <= 0:
-		u.burst_left = 0
-		if int(u.reserve) > 0:
-			u.reload_reserved = mini(int(weapon.magazine), int(u.reserve))
-			u.reload_progress = 0.0
-			u.status = "步枪换弹"
-			_reset_aim(u, "reloading")
-		else:
-			u.status = "步枪弹药耗尽"
-			_reset_aim(u, "blocked")
+	if not _rifle_job_allowed(world,u):
+		_interrupt_reload(u,float(weapon.reload))
+		_reset_aim(u)
+		u.idle_reload_since=-1.0
 		return
-	if not _can_work(world, u):
-		_reset_aim(u, "blocked")
+	var can_reload: bool = _action_allowed(world,u,"reload") and not _is_moving(u)
+	if int(u.reload_reserved)>0:
+		_reset_aim(u,"reloading")
+		if not can_reload:
+			_interrupt_reload(u,float(weapon.reload)); u.status="换弹暂停"; return
+		_advance_reload(world,u,float(weapon.reload),dt,"reserve",int(weapon.magazine))
 		return
-	var target: Dictionary = _choose_target(world, u, weapon)
+	var target: Dictionary = _choose_target(world,u,weapon)
+	var waiting: bool = int(u.target_id)>=0 and String(u.get("target_policy","strict"))=="strict"
+	if _want_reload(world,u,int(weapon.magazine),(not target.is_empty() or waiting) and not bool(u.get("hold_fire",false)),can_reload) and int(u.reserve)>0:
+		_start_reload(world,u,mini(int(u.reserve),int(weapon.magazine)-int(u.loaded)))
+		return
+	if int(u.loaded)<=0:
+		u.status="步枪弹药耗尽" if int(u.reserve)<=0 else "等待换弹"
+		_reset_aim(u,"blocked"); return
+	if bool(u.get("hold_fire",false)):
+		_reset_aim(u); u.status="停火警戒"; return
+	if not _action_allowed(world,u,"fire"):
+		_reset_aim(u,"blocked"); return
 	if target.is_empty():
-		_reset_aim(u, "blocked" if int(u.target_id) >= 0 else "idle")
-		if int(u.target_id) >= 0: u.status = "指定目标暂不可攻击，守位等待"
+		_reset_aim(u,"blocked" if waiting else "idle")
+		if waiting: u.status="指定目标暂不可攻击，守位等待"
 		return
-	var pose: Dictionary = Pose.aimed_rifle(Vector2(u.pos), Vector2(target.pos), _posture(u))
-	u.weapon_facing = float(pose.angle)
-	if not _muzzle_clear(world, Vector2(u.pos), Vector2(pose.muzzle)):
-		_reset_aim(u, "blocked")
-		u.status = "枪口被墙体阻挡"
-		return
-	u["weapon_holder_id"] = int(u.id)
-	_fire_burst(world, u, u, target, weapon, Vector2(pose.muzzle), dt)
+	var condition: Dictionary = can_fire_pose(world,u,target)
+	if not bool(condition.ok): _reset_aim(u,"blocked"); u.status=condition.reason; return
+	var pose: Dictionary = Pose.aimed_rifle(Vector2(u.pos),Vector2(target.pos),_posture(u))
+	u.weapon_facing=float(pose.angle)
+	u["weapon_holder_id"]=int(u.id)
+	u["fire_reference"]=Vector2(pose.get("pivot",u.pos))
+	_fire_burst(world,u,u,target,weapon,Vector2(pose.muzzle),dt)
 
 
 func _update_machine_gun(world, b: Dictionary, dt: float) -> void:
-	var crew: Array[Dictionary] = _station_crew(world, b)
-	var operator: Dictionary = crew[0] if not crew.is_empty() else {}
-	if operator.is_empty() or String(operator.stage) != "station":
-		_cancel_reload(b)
-		b.burst_left = 0
-		b["reload_operator"] = -1
-		b.status = "无人操作" if crew.is_empty() else "等待操作员到岗"
-		_reset_aim(b)
-		return
-	if int(b.get("reload_operator", -1)) != int(operator.id):
-		_cancel_reload(b)
-		b.burst_left = 0
-		b["reload_operator"] = int(operator.id)
-		_reset_aim(b)
 	var weapon: Dictionary = Config.machine_gun()
-	if int(b.reload_reserved) > 0:
-		_reset_aim(b, "reloading")
-		if not _can_work(world, operator):
-			b.status = "换弹带暂停"
-			return
-		b.reload_progress = float(b.reload_progress) + dt
-		if float(b.reload_progress) + EPS < float(weapon.reload):
-			b.status = "换弹带 %.1f/5秒" % float(b.reload_progress)
-			return
-		var transfer: int = mini(int(b.reload_reserved), mini(int(b.ammo), int(weapon.magazine) - int(b.loaded)))
-		b.ammo = int(b.ammo) - transfer
-		b.loaded = int(b.loaded) + transfer
-		_cancel_reload(b)
-		b.burst_left = 0
-	if int(b.loaded) <= 0:
-		b.burst_left = 0
-		if int(b.ammo) > 0:
-			b.reload_reserved = mini(int(weapon.magazine), int(b.ammo))
-			b.reload_progress = 0.0
-			b.status = "换弹带"
-			_reset_aim(b, "reloading")
-		else:
-			b.status = "缺少机枪弹"
-			_reset_aim(b, "blocked")
+	var crew: Array[Dictionary] = _station_crew(world,b)
+	var operator: Dictionary = crew[0] if not crew.is_empty() else {}
+	if operator.is_empty() or String(operator.stage)!="station":
+		_interrupt_reload(b,float(weapon.reload)); _reset_aim(b)
+		b.status="无人操作" if crew.is_empty() else "等待操作员到岗"
+		b.idle_reload_since=-1.0
 		return
-	if not _can_work(world, operator):
-		_reset_aim(b, "blocked")
-		b.status = "操作暂停"
+	if int(b.get("reload_operator",-1))!=int(operator.id):
+		_interrupt_reload(b,float(weapon.reload)); _reset_aim(b)
+		b["reload_operator"]=int(operator.id)
+	var can_work: bool = _action_allowed(world,operator,"operate") and _posture(operator)<=1
+	if int(b.reload_reserved)>0:
+		_reset_aim(b,"reloading")
+		if not can_work: _interrupt_reload(b,float(weapon.reload)); b.status="换弹带暂停"; return
+		_advance_reload(world,b,float(weapon.reload),dt,"ammo",int(weapon.magazine))
 		return
-	var target: Dictionary = _choose_target(world, operator, weapon, b)
+	var target: Dictionary = _choose_target(world,operator,weapon,b)
+	var waiting: bool = int(b.target_id)>=0 and String(b.get("target_policy","strict"))=="strict"
+	if _want_reload(world,b,int(weapon.magazine),(not target.is_empty() or waiting) and not bool(b.get("hold_fire",false)),can_work) and int(b.ammo)>0:
+		_start_reload(world,b,mini(int(b.ammo),int(weapon.magazine)-int(b.loaded)))
+		return
+	if int(b.loaded)<=0: b.status="缺少机枪弹"; _reset_aim(b,"blocked"); return
+	if not can_work: _reset_aim(b,"blocked"); b.status="操作暂停"; return
+	if bool(b.get("hold_fire",false)): _reset_aim(b); b.status="停火警戒"; return
 	if target.is_empty():
-		_reset_aim(b, "blocked" if int(b.target_id) >= 0 else "idle")
-		b.status = "指定目标暂不可攻击" if int(b.target_id) >= 0 else "警戒射界"
+		_reset_aim(b,"blocked" if waiting else "idle")
+		b.status="指定目标暂不可攻击" if waiting else "警戒射界"
 		return
-	b.weapon_facing = (Vector2(target.pos) - Vector2(b.pos)).angle()
-	operator.weapon_facing = float(b.weapon_facing)
-	var pose: Dictionary = Pose.station(Vector2(b.pos), float(b.weapon_facing), "mg")
-	if not _muzzle_clear(world, Vector2(b.pos), Vector2(pose.muzzle)):
-		_reset_aim(b, "blocked")
-		b.status = "枪口被墙体阻挡"
-		return
+	var condition: Dictionary = can_fire_pose(world,operator,target,b)
+	if not bool(condition.ok): _reset_aim(b,"blocked"); b.status=condition.reason; return
+	b.weapon_facing=(Vector2(target.pos)-Vector2(b.pos)).angle()
+	operator.weapon_facing=float(b.weapon_facing)
+	var pose: Dictionary = Pose.station(Vector2(b.pos),float(b.weapon_facing),"mg")
 	var shooter: Dictionary = operator.duplicate()
-	shooter.pos = b.pos
-	shooter["weapon_holder_id"] = int(b.id)
-	_fire_burst(world, shooter, b, target, weapon, Vector2(pose.muzzle), dt)
-	operator.stability = shooter.stability
-	operator["combat_target_id"] = shooter.get("combat_target_id", -1)
+	shooter.pos=b.pos
+	shooter["fire_reference"]=Vector2(pose.get("pivot",b.pos))
+	shooter["weapon_holder_id"]=int(b.id)
+	_fire_burst(world,shooter,b,target,weapon,Vector2(pose.muzzle),dt)
+	operator.stability=shooter.stability
+	operator["combat_target_id"]=shooter.get("combat_target_id",-1)
 
 
 func _update_mortar(world, b: Dictionary, dt: float) -> void:
-	var crew: Array[Dictionary] = _station_crew(world, b)
+	var crew: Array[Dictionary] = _station_crew(world,b)
 	if crew.is_empty():
-		b.reload_progress = 0.0
-		b.reload_reserved = 0
-		b.aim_progress = 0.0
-		b.fire_requested = false
-		b["mortar_gunner"] = -1
-		b.status = "无人操作"
-		_reset_aim(b)
+		_interrupt_reload(b,MORTAR_LOAD_WORK)
+		b.aim_progress=0.0; b.status="无人操作"; _reset_aim(b)
 		return
 	var gunner: Dictionary = crew[0]
-	if int(b.get("mortar_gunner", -1)) != int(gunner.id):
-		b["mortar_gunner"] = int(gunner.id)
-		b.aim_progress = 0.0
-	if not bool(b.fire_requested):
-		b.aim_progress = 0.0
-		b.status = "炮弹已装膛" if int(b.loaded) > 0 else "等待轰击命令"
-		_reset_aim(b)
-		return
-	var unit_target: Dictionary = {}
-	if int(b.target_id) >= 0:
-		unit_target = world.entity(int(b.target_id))
-		if not _target_alive(unit_target):
-			b.target_id = -1
-			b.fire_requested = false
-			b.aim_progress = 0.0
-			_reset_aim(b)
-			b.status = "目标已失效"
-			return
-		b.fire_point = unit_target.pos
-	var aim_point: Vector2 = b.fire_point
-	if unit_target.is_empty() and Vector2(b.get("mortar_aim_point", Vector2.INF)) != aim_point:
-		b["mortar_aim_point"] = aim_point
-		b.aim_progress = 0.0
-	var distance: float = Vector2(b.pos).distance_to(aim_point)
-	if distance < 8.0 - EPS or distance > 40.0 + EPS:
-		b.aim_progress = 0.0
-		b.status = "落点须距炮位8至40格"
-		_reset_aim(b, "blocked")
-		return
-	b.weapon_facing = (aim_point - Vector2(b.pos)).angle()
-	b.aim_target_id = int(b.target_id)
+	if int(b.get("mortar_gunner",-1))!=int(gunner.id):
+		b["mortar_gunner"]=int(gunner.id); b.aim_progress=0.0
 	var workers: int = 0
 	for member in crew:
-		if String(member.stage) == "station" and _can_work(world, member):
-			workers += 1
-	if int(b.loaded) <= 0:
-		_reset_aim(b, "reloading")
-		b.aim_progress = 0.0
-		if int(b.ammo) <= 0:
-			b.reload_reserved = 0
-			b.status = "缺少炮弹"
-			return
-		b.reload_reserved = 1
-		if workers == 0:
-			b.status = "装填暂停"
-			return
-		# Single-person seconds preserve work when the available crew count changes.
-		b.reload_progress = float(b.reload_progress) + dt * (2.5 if workers >= 2 else 1.0)
-		b.status = "%d人装填 %.0f%%" % [workers, 100.0 * float(b.reload_progress) / MORTAR_LOAD_WORK]
-		if float(b.reload_progress) + EPS >= MORTAR_LOAD_WORK:
-			b.ammo = int(b.ammo) - 1
-			b.loaded = 1
-			b.reload_reserved = 0
-			b.reload_progress = 0.0
+		if String(member.stage)=="station" and _action_allowed(world,member,"operate") and _posture(member)<=1: workers+=1
+	# Chambering happens before a command exists; a loaded shell never fires itself.
+	if int(b.loaded)<=0:
+		b.aim_progress=0.0; _reset_aim(b,"reloading")
+		if int(b.ammo)<=0: _cancel_reload(b); b.status="缺少炮弹"; return
+		if int(b.reload_reserved)<=0: _start_reload(world,b,1)
+		if workers<=0: _interrupt_reload(b,MORTAR_LOAD_WORK); b.status="装填暂停"; return
+		_advance_reload(world,b,MORTAR_LOAD_WORK,dt*(2.5 if workers>=2 else 1.0),"ammo",1)
 		return
-	if String(gunner.stage) != "station" or not _can_work(world, gunner):
-		b.aim_progress = 0.0
-		b.status = "等待炮手瞄准"
-		_reset_aim(b, "blocked")
-		return
-	b.aim_progress = float(b.aim_progress) + dt
-	b.weapon_state = "aiming"
-	b.aim_fraction = clampf(float(b.aim_progress) / MORTAR_AIM_TIME, 0.0, 1.0)
-	b.status = "瞄准 %.1f/4秒" % float(b.aim_progress)
-	if float(b.aim_progress) + EPS < MORTAR_AIM_TIME:
-		return
-	var radius: float = 2.5 - 1.5 * clampf(float(gunner.stability), 0.0, 1.0)
-	var scatter: Vector2 = Vector2.from_angle(world.rng.randf() * TAU) * sqrt(world.rng.randf()) * radius
-	var impact: Vector2 = aim_point + scatter
-	var pose: Dictionary = Pose.station(Vector2(b.pos), float(b.weapon_facing), "mortar")
+	if not bool(b.fire_requested):
+		b.aim_progress=0.0; b.status="炮弹已装膛"; _reset_aim(b); return
+	if bool(b.get("hold_fire",false)):
+		b.aim_progress=0.0; b.status="停火，轰击命令挂起"; _reset_aim(b); return
+	var target: Dictionary = {}
+	if int(b.target_id)>=0:
+		target=world.entity(int(b.target_id))
+		if not _target_alive(target):
+			b.target_id=-1; b.fire_requested=false; b.aim_progress=0.0; _reset_aim(b); b.status="目标已失效"; return
+		b.fire_point=target.pos
+	var aim_point: Vector2 = b.fire_point
+	if target.is_empty() and Vector2(b.get("mortar_aim_point",Vector2.INF))!=aim_point:
+		b["mortar_aim_point"]=aim_point; b.aim_progress=0.0
+	var distance: float = Vector2(b.pos).distance_to(aim_point)
+	if distance<8.0-EPS or distance>40.0+EPS:
+		b.aim_progress=0.0; b.status="落点须距炮位8至40格"; _reset_aim(b,"blocked"); return
+	b.weapon_facing=(aim_point-Vector2(b.pos)).angle(); b.aim_target_id=int(b.target_id)
+	if String(gunner.stage)!="station" or not _action_allowed(world,gunner,"operate") or _posture(gunner)>1:
+		b.aim_progress=0.0; b.status="等待炮手瞄准"; _reset_aim(b,"blocked"); return
+	b.aim_progress=float(b.aim_progress)+dt
+	b.weapon_state="aiming"; b.aim_fraction=clampf(float(b.aim_progress)/MORTAR_AIM_TIME,0.0,1.0)
+	b.status="瞄准 %.1f/4秒" % float(b.aim_progress)
+	if float(b.aim_progress)+EPS<MORTAR_AIM_TIME: return
+	var pose: Dictionary = Pose.station(Vector2(b.pos),float(b.weapon_facing),"mortar")
 	var muzzle: Vector2 = pose.muzzle
-	if not _muzzle_clear(world, Vector2(b.pos), muzzle):
-		b.status = "炮口被墙体阻挡"
-		b.weapon_state = "blocked"
-		return
-	var shell: Dictionary = {"id": _next_projectile_id(world), "kind": "mortar", "weapon_kind": "mortar", "team": int(gunner.team), "shooter_id": int(gunner.id), "target_id": int(b.target_id), "pos": muzzle, "prev_pos": muzzle, "start": muzzle, "impact": impact, "velocity": (impact - muzzle) / MORTAR_FLIGHT_TIME, "dir": (impact - muzzle).normalized(), "age": 0.0, "life": MORTAR_FLIGHT_TIME, "arc_height": 0.0, "born_step": int(world.step_index)}
+	if not _muzzle_clear(world,Vector2(b.pos),muzzle): b.status="炮口被墙体阻挡"; b.weapon_state="blocked"; return
+	var scatter: Vector2 = Vector2.from_angle(world.rng.randf()*TAU)*sqrt(world.rng.randf())*_mortar_scatter(gunner)
+	var impact: Vector2 = aim_point+scatter
+	var shell: Dictionary = {"id":_next_projectile_id(world),"kind":"mortar","weapon_kind":"mortar","team":int(gunner.team),"shooter_id":int(gunner.id),"target_id":int(b.target_id),"pos":muzzle,"prev_pos":muzzle,"start":muzzle,"impact":impact,"velocity":(impact-muzzle)/MORTAR_FLIGHT_TIME,"dir":(impact-muzzle).normalized(),"age":0.0,"life":MORTAR_FLIGHT_TIME,"arc_height":0.0,"born_step":int(world.step_index)}
 	world.projectiles.append(shell)
-	b.loaded = 0
-	b.aim_progress = 0.0
-	b.fire_requested = false
-	b.target_id = -1
-	b.weapon_state = "firing"
-	b.aim_fraction = 1.0
-	b.status = "炮弹飞行中"
-	world.stats.mortar_shots = int(world.stats.get("mortar_shots", 0)) + 1
-	world.emit_event("weapon_fired", {"entity_id": int(b.id), "holder_id": int(b.id), "shooter_id": int(gunner.id), "projectile_id": int(shell.id), "pos": muzzle, "target_pos": impact, "team": int(gunner.team), "weapon_kind": "mortar", "dir": shell.dir, "aim_dir": Vector2.from_angle(float(b.weapon_facing))})
+	b.loaded=0; b.aim_progress=0.0; b.fire_requested=false; b.target_id=-1
+	b.weapon_state="firing"; b.aim_fraction=1.0; b.status="炮弹飞行中"
+	world.stats.mortar_shots=int(world.stats.get("mortar_shots",0))+1
+	world.emit_event("weapon_fired",{"entity_id":int(b.id),"holder_id":int(b.id),"shooter_id":int(gunner.id),"projectile_id":int(shell.id),"pos":muzzle,"target_pos":impact,"team":int(gunner.team),"weapon_kind":"mortar","dir":shell.dir,"aim_dir":Vector2.from_angle(float(b.weapon_facing))})
+
+
+func _is_moving(unit: Dictionary) -> bool:
+	return bool(unit.get("move_active",false)) or Vector2(unit.get("velocity",Vector2.ZERO)).length_squared()>EPS
+
+
+func _action_allowed(world, unit: Dictionary, action: String) -> bool:
+	if world.unit_system.has_method("can_act"):
+		return bool(world.unit_system.can_act(world,unit,action).get("ok",false))
+	return not bool(unit.dead) and bool(unit.conscious) and not bool(unit.get("cower",false)) and float(unit.hp)>=float(unit.max_hp)*.25 and float(unit.posture_timer)<=EPS and float(unit.rout_until)<=float(world.time_s) and int(unit.crate_id)<0 and int(unit.rescued_id)<0 and int(unit.carrier_id)<0
+
+
+func _want_reload(world, holder: Dictionary, capacity: int, busy: bool, compatible: bool) -> bool:
+	if int(holder.loaded)>=capacity: holder.idle_reload_since=-1.0; return false
+	if int(holder.loaded)<=0: return compatible
+	if busy or not compatible: holder.idle_reload_since=-1.0; return false
+	if float(holder.get("idle_reload_since",-1.0))<0.0: holder.idle_reload_since=float(world.time_s)
+	return float(world.time_s)-float(holder.idle_reload_since)+EPS>=IDLE_RELOAD_DELAY
+
+
+func _start_reload(world, holder: Dictionary, count: int) -> void:
+	holder.reload_reserved=count; holder.reload_stage=0; holder.reload_progress=0.0; holder.reload_paused=false
+	_reset_aim(holder,"reloading")
+	world.emit_event("reload_started",{"entity_id":int(holder.id),"pos":Vector2(holder.pos),"stage":0})
+
+
+func _interrupt_reload(holder: Dictionary, total_work: float) -> void:
+	if int(holder.get("reload_reserved",0))<=0 or bool(holder.get("reload_paused",false)): return
+	holder.reload_progress=float(clampi(int(holder.get("reload_stage",0)),0,1))*total_work*.5
+	holder.reload_paused=true
+
+
+func _advance_reload(world, holder: Dictionary, total_work: float, work: float, source_key: String, capacity: int) -> bool:
+	holder.reload_paused=false
+	holder.reload_progress=float(holder.reload_progress)+work
+	if int(holder.get("reload_stage",0))==0 and float(holder.reload_progress)+EPS>=total_work*.5:
+		holder.reload_stage=1
+		world.emit_event("reload_stage",{"entity_id":int(holder.id),"pos":Vector2(holder.pos),"stage":1})
+	holder.status="装填%s %.0f%%" % ["准备" if int(holder.reload_stage)==0 else "装入",100.0*float(holder.reload_progress)/total_work]
+	if float(holder.reload_progress)+EPS<total_work: return false
+	var transfer: int = mini(int(holder.reload_reserved),mini(int(holder.get(source_key,0)),capacity-int(holder.loaded)))
+	holder[source_key]=int(holder.get(source_key,0))-transfer
+	holder.loaded=int(holder.loaded)+transfer
+	_cancel_reload(holder)
+	world.emit_event("reload_complete",{"entity_id":int(holder.id),"pos":Vector2(holder.pos),"amount":transfer})
+	return true
 
 
 func _fire_burst(world, shooter: Dictionary, holder: Dictionary, target: Dictionary, weapon: Dictionary, muzzle: Vector2, dt: float = Config.FIXED_DT) -> void:
@@ -532,10 +700,12 @@ func _choose_target(world, shooter: Dictionary, weapon: Dictionary, station: Dic
 		if _target_alive(preferred) and _target_in_range(world, shooter, preferred, weapon, station):
 			return preferred
 		if _target_alive(preferred):
-			return {}
-		# Terminal targets release a lock; temporary range/occlusion never retargets.
-		if station.is_empty(): shooter.target_id = -1
-		else: station.target_id = -1
+			var holder: Dictionary = shooter if station.is_empty() else station
+			if String(holder.get("target_policy","strict")) == "strict": return {}
+		else:
+			if station.is_empty(): shooter.target_id = -1
+			else: station.target_id = -1
+
 	var best: Dictionary = {}
 	var best_score: float = INF
 	for candidate in world.units:
@@ -550,15 +720,7 @@ func _choose_target(world, shooter: Dictionary, weapon: Dictionary, station: Dic
 
 
 func _target_in_range(world, shooter: Dictionary, target: Dictionary, weapon: Dictionary, station: Dictionary) -> bool:
-	var origin: Vector2 = shooter.pos if station.is_empty() else station.pos
-	var offset: Vector2 = Vector2(target.pos) - origin
-	if offset.length_squared() > float(weapon.range) * float(weapon.range) + EPS:
-		return false
-	if not station.is_empty() and absf(wrapf(offset.angle() - float(station.facing), -PI, PI)) > float(station.arc) * 0.5 + EPS:
-		return false
-	var source: Dictionary = shooter.duplicate()
-	source.pos = origin
-	return has_line_of_fire(world, source, target)
+	return bool(can_fire_pose(world,shooter,target,station).ok)
 
 
 func validate_station_attack(world, station_id: int, target_id: int) -> Dictionary:
@@ -620,16 +782,19 @@ func _rifle_job_allowed(world, u: Dictionary) -> bool:
 
 
 func _can_work(world, u: Dictionary) -> bool:
-	return not bool(u.dead) and bool(u.conscious) and float(u.hp) >= float(u.max_hp) * 0.25 and not bool(u.forced_prone) and float(u.posture_timer) <= EPS and float(u.rout_until) <= float(world.time_s) and int(u.crate_id) < 0 and int(u.rescued_id) < 0 and int(u.carrier_id) < 0
+	return _action_allowed(world,u,"fire")
 
 
 func _cancel_reload(holder: Dictionary) -> void:
 	holder.reload_progress = 0.0
 	holder.reload_reserved = 0
+	holder["reload_stage"] = 0
+	holder["reload_paused"] = false
+	holder["idle_reload_since"] = -1.0
 
 
 func _new_direct_projectile(world, origin: Vector2, direction: Vector2, team: int, shooter_id: int, target_id: int, weapon: Dictionary) -> Dictionary:
-	return {"id": _next_projectile_id(world), "kind": String(weapon.kind), "weapon_kind": String(weapon.kind), "team": team, "shooter_id": shooter_id, "target_id": target_id, "start": origin, "pos": origin, "prev_pos": origin, "dir": direction, "velocity": direction * float(weapon.speed), "speed": float(weapon.speed), "damage": float(weapon.damage), "penetration": float(weapon.penetration), "remaining": float(weapon.range), "travelled": 0.0, "life": float(weapon.range) / float(weapon.speed), "born_step": int(world.step_index), "cover_checked": {}, "low_cells_seen": {}, "suppression_applied": {}}
+	return {"id": _next_projectile_id(world), "kind": String(weapon.kind), "weapon_kind": String(weapon.kind), "team": team, "shooter_id": shooter_id, "target_id": target_id, "start": origin, "pos": origin, "prev_pos": origin, "dir": direction, "velocity": direction * float(weapon.speed), "speed": float(weapon.speed), "damage": float(weapon.damage), "penetration": float(weapon.penetration), "remaining": float(weapon.range), "travelled": 0.0, "life": float(weapon.range) / float(weapon.speed), "born_step": int(world.step_index), "cover_checked": {}, "low_cells_seen": {}, "cover_intervals": [], "suppression_applied": {}}
 
 
 func _next_projectile_id(world) -> int:
@@ -640,21 +805,24 @@ func _next_projectile_id(world) -> int:
 
 func _miss_direction(world, origin: Vector2, target: Dictionary, aim: Vector2) -> Vector2:
 	var angle: float = aim.angle()
-	var lower: float = 0.0
-	var upper: float = 0.0
-	if _is_building(target):
-		var rect: Rect2 = Rect2(target.rect)
-		for corner in [rect.position, rect.position + Vector2(rect.size.x, 0.0), rect.end, rect.position + Vector2(0.0, rect.size.y)]:
-			var difference: float = wrapf(Vector2(corner - origin).angle() - angle, -PI, PI)
-			lower = minf(lower, difference)
-			upper = maxf(upper, difference)
-	else:
-		var distance: float = maxf(origin.distance_to(Vector2(target.pos)), EPS)
-		var tangent: float = asin(clampf((float(Config.RADII[_posture(target)]) + 0.025) / distance, 0.0, 0.9999))
-		lower = -tangent
-		upper = tangent
+	var limits: Vector2 = _miss_limits(origin,target,aim)
+	var lower: float = limits.x
+	var upper: float = limits.y
 	var miss_offset: float = world.rng.randf_range(0.025, 0.16)
 	return Vector2.from_angle(angle + (upper + miss_offset if world.rng.randf() < 0.5 else lower - miss_offset))
+
+
+func _miss_limits(origin: Vector2, target: Dictionary, aim: Vector2) -> Vector2:
+	var limits: Vector2 = Vector2.ZERO
+	if _is_building(target):
+		var rect: Rect2 = Rect2(target.rect)
+		for corner in [rect.position,rect.position+Vector2(rect.size.x,0),rect.end,rect.position+Vector2(0,rect.size.y)]:
+			var difference: float = wrapf(Vector2(corner-origin).angle()-aim.angle(),-PI,PI)
+			limits.x=minf(limits.x,difference); limits.y=maxf(limits.y,difference)
+	else:
+		var tangent: float = asin(clampf((_radius(target)+.025)/maxf(origin.distance_to(Vector2(target.pos)),EPS),0.0,.9999))
+		limits=Vector2(-tangent,tangent)
+	return limits
 
 
 func _advance_shell(world, p: Dictionary, dt: float) -> bool:
@@ -682,26 +850,31 @@ func _advance_direct(world, p: Dictionary, dt: float) -> bool:
 	var collisions: Array[Dictionary] = []
 	var bounds: Rect2 = _segment_bounds(origin, destination)
 	for u in _units_in_bounds(world, bounds):
-		if bool(u.dead) or float(u.hp) <= 0.0 or (p.kind != "fragment" and int(u.id) == int(p.shooter_id)):
-			continue
-		var t: float = _moving_circle_hit(origin, destination, Vector2(u.prev_pos), Vector2(u.pos), float(Config.RADII[_posture(u)]))
-		if t >= 0.0:
+		if bool(u.dead) or float(u.hp) <= 0.0 or (p.kind != "fragment" and int(u.id) == int(p.shooter_id)): continue
+		var t: float = _moving_circle_hit(origin, destination, Vector2(u.prev_pos), Vector2(u.pos), _radius(u))
+		if t >= 0.0 and not _body_exempt(p, u, origin.lerp(destination,t),Vector2(u.prev_pos).lerp(Vector2(u.pos),t)):
 			collisions.append({"t": t, "priority": 1, "kind": "unit", "entity": u, "id": int(u.id)})
+	if bool(p.get("prefix_pending", false)):
+		var prefix: Vector2 = p.get("prefix_start", origin)
+		for u in world.units:
+			if bool(u.dead) or float(u.hp) <= 0.0 or int(u.id) == int(p.shooter_id): continue
+			var t: float = _moving_circle_hit(prefix, Vector2(p.start), Vector2(u.pos), Vector2(u.pos), _radius(u))
+			if t >= 0.0 and not _body_exempt(p, u, prefix.lerp(Vector2(p.start),t)):
+				collisions.append({"t": -1.0+t*.999, "point":prefix.lerp(Vector2(p.start),t), "priority":1, "kind":"unit", "entity":u, "id":int(u.id)})
+		p["prefix_pending"] = false
 	for b in _buildings_in_bounds(world, bounds):
-		if not _building_alive(b) or _barrier_type(b) == "floor" or int(b.id) == int(p.get("source_building_id", -1)):
-			continue
+		if not _building_alive(b) or _barrier_type(b) == "floor" or int(b.id) == int(p.get("source_building_id", -1)): continue
 		if _barrier_type(b) == "wall" or int(b.id) == int(p.target_id):
 			var interval: Vector2 = _segment_rect_interval(origin, destination, Rect2(b.rect))
-			if interval.x >= 0.0:
+			if _positive_crossing(origin,destination,interval) or _point_inside_rect(origin,Rect2(b.rect)):
 				collisions.append({"t": interval.x, "priority": 0, "kind": "building", "entity": b, "id": int(b.id)})
-			continue
-		if _segment_rect_interval(origin, destination, Rect2(b.rect)).x < 0.0:
-			continue
-		if p.cover_checked.has(int(b.id)):
-			continue
-		var intersection: Dictionary = _building_crossing(b, origin, destination)
-		if not intersection.is_empty():
-			collisions.append({"t": intersection.t, "priority": 0, "kind": "low", "entity": b, "id": int(b.id), "cell": intersection.cell})
+	var full_start: Vector2 = p.get("start", origin-Vector2(p.dir)*float(p.travelled))
+	var full_end: Vector2 = full_start+Vector2(p.dir)*(float(p.travelled)+float(p.remaining))
+	for segment in _cover_segments(world, full_start, full_end, int(p.get("source_building_id",-1)), int(p.target_id)):
+		if bool(segment.blocked) or _segment_checked(p,segment): continue
+		if float(segment.exit_distance) < float(p.travelled)-SEGMENT_TOLERANCE or float(segment.entry_distance) > float(p.travelled)+distance+EPS: continue
+		var t: float = clampf((float(segment.entry_distance)-float(p.travelled))/maxf(EPS,distance),0.0,1.0)
+		collisions.append({"t": t, "priority": 0, "kind": "low", "entity": segment.entity, "id": int(segment.building_id), "cell": segment.cell, "segment":segment})
 	collisions.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		if absf(float(a.t) - float(b.t)) > EPS:
 			return float(a.t) < float(b.t)
@@ -712,17 +885,13 @@ func _advance_direct(world, p: Dictionary, dt: float) -> bool:
 	for collision in collisions:
 		var victim: Dictionary = collision.entity
 		var t: float = float(collision.t)
-		var impact_position: Vector2 = origin.lerp(destination, t)
+		var impact_position: Vector2 = collision.get("point",origin.lerp(destination, clampf(t,0.0,1.0)))
 		var armor_absorbed: bool = collision.kind == "unit" and float(p.penetration) < float(victim.get("armor", 0.0))
 		if collision.kind == "low":
 			var protected: Dictionary = _forward_victim(world, p, origin, destination, t)
-			var volume: float = 1.0 if protected.is_empty() else float(Config.VOLUMES[_posture(protected)])
-			var original: Vector2 = p.get("start", Vector2(p.pos) - Vector2(p.dir) * float(p.travelled))
-			var end_distance: float = float(p.travelled) + float(p.remaining)
-			if not protected.is_empty(): end_distance = maxf(0.0, (Vector2(protected.pos) - original).dot(Vector2(p.dir)))
-			var full_crossing: Dictionary = _building_crossing(victim, original, original + Vector2(p.dir) * end_distance)
-			p.cover_checked[int(victim.id)] = full_crossing.get("cell", collision.cell)
-			var chance: float = cover_probability(victim, volume, original.distance_to(impact_position))
+			var volume: float = 1.0 if protected.is_empty() else _volume(protected)
+			_mark_segment(p, collision.segment)
+			var chance: float = cover_probability(victim, volume, float(collision.segment.entry_distance))
 			if chance <= 0.0 or world.rng.randf() >= chance:
 				continue
 			_damage_building(world, victim, float(p.damage) * 0.25, p)
@@ -733,10 +902,10 @@ func _advance_direct(world, p: Dictionary, dt: float) -> bool:
 			else:
 				_damage_building(world, victim, float(p.damage) * 0.25, p)
 		p.pos = impact_position
-		_suppress_along(world, p, origin, impact_position, t)
+		_suppress_along(world, p, origin, impact_position, clampf(t,0.0,1.0))
 		var material: String = ("armor" if armor_absorbed else "unit") if collision.kind == "unit" else String(victim.get("material", {"sandbag": "sandbag", "crate": "wood", "wall": "concrete", "core": "concrete"}.get(String(victim.kind), "metal")))
 		world.emit_event("projectile_impact", {"entity_id": int(victim.id), "shooter_id": int(p.shooter_id), "projectile_id": int(p.id), "pos": impact_position, "team": int(p.team), "weapon_kind": String(p.kind), "material": material, "armor_absorbed": armor_absorbed, "blocked_by_cover": collision.kind == "low"})
-		_record_finished(world, p, distance * t / step_distance if step_distance > 0.0 else 0.0, float(p.travelled) / float(p.speed), (float(p.travelled) + distance * t) / float(p.speed), "impact")
+		_record_finished(world, p, distance * maxf(0.0,t) / step_distance if step_distance > 0.0 else 0.0, float(p.travelled) / float(p.speed), (float(p.travelled) + distance * maxf(0.0,t)) / float(p.speed), "impact")
 		return false
 	p.pos = destination
 	p.remaining = maxf(0.0, float(p.remaining) - distance)
@@ -761,10 +930,12 @@ func _forward_victim(world, p: Dictionary, origin: Vector2, step_end: Vector2, e
 	for u in world.units:
 		if bool(u.dead) or float(u.hp) <= 0.0 or (p.kind != "fragment" and int(u.id) == int(p.shooter_id)):
 			continue
-		var radius: float = float(Config.RADII[_posture(u)])
+		var radius: float = _radius(u)
 		var t: float = _moving_circle_hit(origin, end, Vector2(u.pos), Vector2(u.pos), radius)
 		var distance: float = t * float(p.remaining) if t >= 0.0 else INF
+		if t >= 0.0 and _body_exempt(p,u,origin.lerp(end,t)): continue
 		var moving_t: float = _moving_circle_hit(origin, step_end, Vector2(u.prev_pos), Vector2(u.pos), radius)
+		if moving_t>=0.0 and _body_exempt(p,u,origin.lerp(step_end,moving_t),Vector2(u.prev_pos).lerp(Vector2(u.pos),moving_t)): moving_t=-1.0
 		if moving_t >= entry_t - EPS and moving_t >= 0.0:
 			distance = minf(distance, moving_t * origin.distance_to(step_end))
 		if distance + EPS < entry_distance or distance >= best_distance:
@@ -821,6 +992,9 @@ func _suppress(world, u: Dictionary, amount: float, source: Dictionary) -> void:
 	source["suppression_applied"] = applied
 	u.suppression = minf(100.0, float(u.suppression) + amount - previous)
 	u.last_threat = float(world.time_s)
+	u["pressure_event_time"] = float(world.time_s)
+	u["pressure_event_serial"] = int(u.get("pressure_event_serial", 0)) + 1
+	u["threat_origin"] = Vector2(source.get("start", source.get("pos", u.pos)))
 
 
 func _blast_barrier(snapshot: Array[Dictionary], origin: Vector2, target: Vector2, excluded_id: int) -> float:
@@ -863,7 +1037,7 @@ func _prepare_queries(world) -> void:
 		var u: Dictionary = _query_units[i]
 		if not bool(u.dead) and float(u.hp) > 0.0:
 			# Include the full motion envelope, including unconscious/prone bodies.
-			_index_bounds(_unit_grid, _segment_bounds(Vector2(u.prev_pos), Vector2(u.pos), float(Config.RADII[_posture(u)])), i)
+			_index_bounds(_unit_grid, _segment_bounds(Vector2(u.prev_pos), Vector2(u.pos), _radius(u)), i)
 	_queries_ready = true
 
 
@@ -934,6 +1108,17 @@ func _moving_circle_hit(start: Vector2, end: Vector2, unit_start: Vector2, unit_
 	return clampf(t, 0.0, 1.0) if t >= -EPS and t <= 1.0 + EPS else -1.0
 
 
+# Query and real collision share the same world-distance tolerance. A point
+# touching one corner is not a wall crossing, even if slab rounding returns a
+# tiny reversed interval. A muzzle truly inside a wall remains blocked.
+func _positive_crossing(start: Vector2, end: Vector2, interval: Vector2) -> bool:
+	return interval.x>=0.0 and (interval.y-interval.x)*start.distance_to(end)>SEGMENT_TOLERANCE
+
+
+func _point_inside_rect(point: Vector2, rect: Rect2) -> bool:
+	return point.x>rect.position.x and point.x<rect.end.x and point.y>rect.position.y and point.y<rect.end.y
+
+
 func _segment_rect_interval(start: Vector2, end: Vector2, rect: Rect2) -> Vector2:
 	var delta: Vector2 = end - start
 	var entry: float = 0.0
@@ -969,6 +1154,37 @@ func _distance_to_segment(point: Vector2, start: Vector2, end: Vector2) -> float
 		return point.distance_to(start)
 	var t: float = clampf((point - start).dot(offset) / offset.length_squared(), 0.0, 1.0)
 	return point.distance_to(start + offset * t)
+
+
+func _volume(unit: Dictionary) -> float:
+	return 0.30 if bool(unit.get("cower", false)) else float(Config.VOLUMES[_posture(unit)])
+
+
+func _radius(unit: Dictionary) -> float:
+	return 0.12 if bool(unit.get("cower", false)) else float(Config.RADII[_posture(unit)])
+
+
+func _eligible_allies(world, projectile: Dictionary) -> Array[int]:
+	var result: Array[int] = []
+	if not String(projectile.kind) in ["rifle", "mg"]: return result
+	var reference: Vector2 = projectile.fire_reference
+	for unit in world.units:
+		if int(unit.id) in [int(projectile.shooter_id), int(projectile.target_id)] or int(unit.team) != int(projectile.team) or bool(unit.dead): continue
+		var moving: bool = Vector2(unit.get("velocity",Vector2.ZERO)).length_squared() > EPS or bool(unit.get("move_active",false))
+		var nearby: bool = reference.distance_to(Vector2(unit.pos)) <= FRIENDLY_LOCAL_RADIUS + SEGMENT_TOLERANCE
+		if not moving:
+			var delta: Vector2i = Vector2i(Vector2(unit.pos).floor())-Vector2i(reference.floor())
+			nearby = absi(delta.x) <= 1 and absi(delta.y) <= 1
+		if nearby: result.append(int(unit.id))
+	return result
+
+
+func _body_exempt(projectile: Dictionary, unit: Dictionary, collision_point: Vector2, unit_position: Vector2 = Vector2.INF) -> bool:
+	if not String(projectile.kind) in ["rifle", "mg"] or int(unit.id) == int(projectile.target_id) or int(unit.team) != int(projectile.team): return false
+	if not projectile.get("exempt_allies", []).has(int(unit.id)): return false
+	var reference: Vector2 = projectile.get("fire_reference", projectile.start)
+	var at_contact: Vector2 = Vector2(unit.pos) if unit_position == Vector2.INF else unit_position
+	return reference.distance_to(at_contact) <= FRIENDLY_LOCAL_RADIUS + SEGMENT_TOLERANCE and reference.distance_to(collision_point) <= FRIENDLY_LOCAL_RADIUS + SEGMENT_TOLERANCE
 
 
 func _posture(u: Dictionary) -> int:

@@ -58,8 +58,8 @@ func setup(target) -> void:
 		var runner = load("res://scripts/qa/victory_check.gd").new()
 		add_child(runner)
 		runner.setup(self, screen)
-	elif mode in ["normal", "motion"]:
-		duration = 35.0 if mode == "normal" else 26.0
+	elif mode in ["normal", "motion", "short"]:
+		duration = 150.0 if mode == "short" else (35.0 if mode == "normal" else 26.0)
 		_prepare_display_review()
 	else:
 		failures.append("Unknown QA mode: " + mode); _finish()
@@ -152,7 +152,7 @@ func _process(_dt: float) -> void:
 		display_elapsed += _dt
 		elapsed = display_elapsed
 	if mode in ["benchmark", "normal"] and elapsed >= 5.0: samples.append((now - previous_usec) / 1000.0)
-	if mode == "motion": _display_review(elapsed)
+	if mode in ["motion", "short"]: _display_review(elapsed)
 	previous_usec = now
 	peak_projectiles = maxi(peak_projectiles, screen.world.projectiles.size())
 	peak_nodes = maxi(peak_nodes, int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT)))
@@ -215,7 +215,7 @@ func _ammo_total() -> int:
 func _validate_progress(elapsed: float) -> void:
 	for u in screen.world.units:
 		var id: int = int(u.id)
-		if u.dead or not u.conscious or int(u.carrier_id) >= 0 or u.path.is_empty() or u.forced_prone or float(u.posture_timer) > 0.0:
+		if u.dead or not u.conscious or int(u.carrier_id) >= 0 or u.path.is_empty() or bool(u.get("cower", false)) or float(u.posture_timer) > 0.0:
 			progress_watch.erase(id); continue
 		if not progress_watch.has(id) or progress_watch[id].pos.distance_to(u.pos) > 0.15 or progress_watch[id].goal.distance_to(u.goal) > 0.15:
 			progress_watch[id] = {"pos": Vector2(u.pos), "goal": Vector2(u.goal), "since": elapsed}
@@ -276,6 +276,12 @@ func _finish() -> void:
 			late += float(memory_samples[memory_samples.size() - 5 + index].memory_bytes) / 5.0
 		if late - early > maxf(8 * 1024 * 1024, early * 0.25): _fail_once("Static memory grew beyond warm-up allowance")
 	var result := {"mode": mode, "elapsed_seconds": elapsed, "frames": samples.size(), "mean_ms": average, "average_fps": 1000.0 / average if average > 0 else 0.0, "p95_ms": p95, "restarts": restarts, "peak_projectiles": peak_projectiles, "peak_nodes": peak_nodes, "memory_samples": memory_samples, "cpu": OS.get_processor_name(), "gpu": RenderingServer.get_video_adapter_name(), "os": OS.get_name(), "logical_resolution": str(screen.get_viewport().get_visible_rect().size), "window_resolution": str(screen.get_window().size), "render_resolution": str(screen.get_viewport().get_texture().get_size()), "engine": Engine.get_version_info().string, "failures": failures}
+	var actual_pck: String = OS.get_executable_path().get_basename() + ".pck"
+	if FileAccess.file_exists(actual_pck):
+		result["pck_sha256"] = FileAccess.get_sha256(actual_pck).to_upper()
+		result["executable"] = OS.get_executable_path()
+		result["pck_path"] = actual_pck
+	result["version"] = str(ProjectSettings.get_setting("application/config/version", "unknown"))
 	if mode == "motion":
 		result["recorded_seconds"] = display_elapsed
 		result["offline_movie_capture"] = offline_capture

@@ -8,3 +8,5 @@ tmp/
 *.zip
 .DS_Store
 Thumbs.db
+docs/archived_art_reviews/
+docs/**/*.import

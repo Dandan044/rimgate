@@ -1,8 +1,10 @@
 param(
     [string]$Godot = "$PSScriptRoot/../.tools/godot/Godot_v4.7.2-stable_win64_console.exe",
     [switch]$SkipTests,
-    [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$')][string]$Version = '0.2.0',
-    [string]$ExportDirectory = 'build/windows',
+    [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$')][string]$Version = '0.3.0',
+    [string]$ExportDirectory = 'build/release_v0.3_windows',
+    [string]$TestReport = '',
+    [string]$EvidenceDirectory = '',
     [switch]$PackageOnly,
     [switch]$ExportOnly
 )
@@ -12,6 +14,9 @@ $enginePath = [IO.Path]::GetFullPath($Godot)
 Push-Location $projectRoot
 try {
     if ($PackageOnly -and $ExportOnly) { throw 'Choose PackageOnly or ExportOnly.' }
+    $series = $Version.Split('.')[1]
+    if (!$TestReport) { $TestReport = "docs/V${series}_TEST_REPORT.md" }
+    if (!$EvidenceDirectory) { $EvidenceDirectory = "build/v${series}_delivery_evidence/build" }
     $commit = (& git rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Build from a Git checkout so the source revision can be identified.' }
     $dirty = & git status --porcelain
@@ -39,7 +44,7 @@ try {
         if ($exportLog -match 'SCRIPT ERROR|Parse Error|Export failed') { throw 'Windows export reported errors.' }
         if ((Get-ProductFingerprint) -ne $productFingerprint) { throw 'Product source changed during export.' }
         [ordered]@{
-            export_source_commit = $commit; product_source_sha256 = $productFingerprint
+            version = $Version; export_source_commit = $commit; product_source_sha256 = $productFingerprint
             exported_utc = [DateTime]::UtcNow.ToString('o')
             executable_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $executable).Hash
             pck_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $pck).Hash
@@ -50,7 +55,9 @@ try {
     if (!(Test-Path -LiteralPath $exportInfoPath)) { throw 'Missing EXPORT.json. Export with this script before reusing the build.' }
     $exportInfo = Get-Content -LiteralPath $exportInfoPath -Raw | ConvertFrom-Json
     if ($exportInfo.product_source_sha256 -ne $productFingerprint -or $exportInfo.executable_sha256 -ne (Get-FileHash -Algorithm SHA256 -LiteralPath $executable).Hash -or $exportInfo.pck_sha256 -ne (Get-FileHash -Algorithm SHA256 -LiteralPath $pck).Hash) { throw 'Export does not match current product source or its recorded binary hashes.' }
+    if ($exportInfo.version -and $exportInfo.version -ne $Version) { throw 'Export version does not match requested package version.' }
     if ($ExportOnly) { $exportInfo; return }
+    if (!(Test-Path -LiteralPath $TestReport)) { throw "Missing final test report: $TestReport" }
     $branch = (& git branch --show-current).Trim()
     $manifest = [ordered]@{
         version = $Version; source_commit = $commit; branch = $branch
@@ -61,22 +68,26 @@ try {
         reused_export = [bool]$PackageOnly
         executable_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $executable).Hash
         pck_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $pck).Hash
-        test_report = 'docs/V2_TEST_REPORT.md'
+        test_report = $TestReport
     }
     # A unique staging folder avoids stale files without recursive deletion.
     $stage = Join-Path $projectRoot ("build/package-$Version-" + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
     Copy-Item -LiteralPath $executable, $pck -Destination $stage
-    Copy-Item -LiteralPath 'README.md', 'DEMO_PLAN.md', 'GAME_DESIGN.md', 'docs' -Destination $stage -Recurse
-    Copy-Item -LiteralPath 'DEMO_V2_PLAN.md' -Destination $stage
+    Copy-Item -LiteralPath 'README.md', 'DEMO_PLAN.md', 'GAME_DESIGN.md', 'DEMO_V2_PLAN.md' -Destination $stage
+    if (Test-Path -LiteralPath 'DEMO_V3_PLAN.md') { Copy-Item -LiteralPath 'DEMO_V3_PLAN.md' -Destination $stage }
+    $stageDocs = Join-Path $stage 'docs'
+    New-Item -ItemType Directory -Path $stageDocs -Force | Out-Null
+    # Review originals belong in the source ZIP, not the playable download.
+    Get-ChildItem -LiteralPath 'docs' -File | Where-Object { $_.Extension -in '.md', '.txt' } | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $stageDocs }
     Copy-Item -LiteralPath 'assets/audio/LICENSES.txt' -Destination (Join-Path $stage 'AUDIO_LICENSES.txt')
     $audioNotices = Join-Path $stage 'source'
     New-Item -ItemType Directory -Path $audioNotices -Force | Out-Null
     Copy-Item -LiteralPath 'assets/audio/source/Tabasco-original-license.txt', 'assets/audio/source/Kenney-original-license.txt', 'assets/audio/source/MANIFEST.json' -Destination $audioNotices
     Copy-Item -LiteralPath 'assets/fonts/LICENSE.txt' -Destination (Join-Path $stage 'FONT_LICENSE.txt')
     # Optional generated evidence preserves the relative screenshot/report links.
-    if (Test-Path -LiteralPath 'build/v2_delivery_evidence/build') {
-        Copy-Item -LiteralPath 'build/v2_delivery_evidence/build' -Destination $stage -Recurse
+    if (Test-Path -LiteralPath $EvidenceDirectory) {
+        Copy-Item -LiteralPath $EvidenceDirectory -Destination $stage -Recurse
     }
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stage 'VERSION.json') -Encoding utf8
     $windowsZip = "$projectRoot/build/Rimgate-demo-v$Version-windows-x64.zip"

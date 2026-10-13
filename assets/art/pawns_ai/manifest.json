@@ -1,0 +1,219 @@
+{
+  "cell": 256,
+  "directions": [
+    "south",
+    "east",
+    "north",
+    "west"
+  ],
+  "postures": [
+    "standing",
+    "crouching",
+    "prone"
+  ],
+  "identities": 9,
+  "male_identities": [
+    6,
+    7,
+    8
+  ],
+  "body_types": [
+    "slender",
+    "broad",
+    "rounded"
+  ],
+  "runtime_body": "body_base.png",
+  "garment_layers": [
+    "uniform_top",
+    "uniform_legs",
+    "vest_light",
+    "vest_standard",
+    "vest_heavy"
+  ],
+  "legacy_outfit_bodies_reference_only": true,
+  "heads": [
+    {
+      "head": 0,
+      "direction": 0,
+      "source": "heads-a.png"
+    },
+    {
+      "head": 0,
+      "direction": 1,
+      "source": "heads-a.png"
+    },
+    {
+      "head": 0,
+      "direction": 2,
+      "source": "heads-a.png"
+    },
+    {
+      "head": 0,
+      "direction": 3,
+      "source": "heads-a.png"
+    },
+    {
+      "head": 1,
+      "direction": 0,
+      "source": "heads-a.png"
+    },
+    {
+      "head": 1,
+      "direction": 1,
+      "source": "heads-a.png"
+    },
+    {
+      "head": 1,
+      "direction": 2,
+      "source": "heads-a.png"
+    },
+    {
+      "head": 1,
+      "direction": 3,
+      "source": "heads-a.png"
+    },
+    {
+      "head": 2,
+      "direction": 0,
+      "source": "heads-a.png"
+    },
+    {
+      "head": 2,
+      "direction": 1,
+      "source": "heads-a.png"
+    },
+    {
+      "head": 2,
+      "direction": 2,
+      "source": "heads-a.png"
+    },
+    {
+      "head": 2,
+      "direction": 3,
+      "source": "heads-a.png"
+    },
+    {
+      "head": 3,
+      "direction": 0,
+      "source": "heads-b.png"
+    },
+    {
+      "head": 3,
+      "direction": 1,
+      "source": "heads-b.png"
+    },
+    {
+      "head": 3,
+      "direction": 2,
+      "source": "heads-b.png"
+    },
+    {
+      "head": 3,
+      "direction": 3,
+      "source": "heads-b.png"
+    },
+    {
+      "head": 4,
+      "direction": 0,
+      "source": "heads-b.png"
+    },
+    {
+      "head": 4,
+      "direction": 1,
+      "source": "heads-b.png"
+    },
+    {
+      "head": 4,
+      "direction": 2,
+      "source": "heads-b.png"
+    },
+    {
+      "head": 4,
+      "direction": 3,
+      "source": "heads-b.png"
+    },
+    {
+      "head": 5,
+      "direction": 0,
+      "source": "heads-b.png"
+    },
+    {
+      "head": 5,
+      "direction": 1,
+      "source": "heads-b.png"
+    },
+    {
+      "head": 5,
+      "direction": 2,
+      "source": "heads-b.png"
+    },
+    {
+      "head": 5,
+      "direction": 3,
+      "source": "heads-b.png"
+    },
+    {
+      "head": 6,
+      "direction": 0,
+      "source": "heads-c.png"
+    },
+    {
+      "head": 6,
+      "direction": 1,
+      "source": "heads-c.png"
+    },
+    {
+      "head": 6,
+      "direction": 2,
+      "source": "heads-c.png"
+    },
+    {
+      "head": 6,
+      "direction": 3,
+      "source": "heads-c.png"
+    },
+    {
+      "head": 7,
+      "direction": 0,
+      "source": "heads-c.png"
+    },
+    {
+      "head": 7,
+      "direction": 1,
+      "source": "heads-c.png"
+    },
+    {
+      "head": 7,
+      "direction": 2,
+      "source": "heads-c.png"
+    },
+    {
+      "head": 7,
+      "direction": 3,
+      "source": "heads-c.png"
+    },
+    {
+      "head": 8,
+      "direction": 0,
+      "source": "heads-c.png"
+    },
+    {
+      "head": 8,
+      "direction": 1,
+      "source": "heads-c.png"
+    },
+    {
+      "head": 8,
+      "direction": 2,
+      "source": "heads-c.png"
+    },
+    {
+      "head": 8,
+      "direction": 3,
+      "source": "heads-c.png"
+    }
+  ],
+  "original_atlases_preserved": true,
+  "shared_weapon_mount_calibrated": true,
+  "balance_ai_cover_rules_modified": false
+}

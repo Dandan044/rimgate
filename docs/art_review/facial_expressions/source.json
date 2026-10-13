@@ -1,0 +1,16 @@
+{
+  "source": "assets/art/vector/friendly_atlas.svg",
+  "sha256": "94bc97e1ddaaa4b67496f4d5835ddf331e9e92a458dedf03f53098fd3ac83abf",
+  "styles": [
+    "A 柔和 · 蔷薇瞳",
+    "B 平静 · 翠绿瞳",
+    "C 锐利 · 紫罗兰瞳"
+  ],
+  "states": [
+    "待命 · 自然眨眼",
+    "专注 · 瞳孔跟随",
+    "惊慌 · 汗滴与颤动",
+    "受伤 · 闭眼忍痛"
+  ],
+  "review_only": true
+}

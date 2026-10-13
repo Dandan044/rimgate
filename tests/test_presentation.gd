@@ -4,6 +4,8 @@ const Presentation = preload("res://scripts/ui/presentation_state.gd")
 const State = preload("res://scripts/sim/state.gd")
 const Config = preload("res://scripts/sim/battle_config.gd")
 const Weapon = preload("res://scripts/sim/weapon_pose.gd")
+const PawnArt = preload("res://scripts/ui/pawn_art.gd")
+const EnvironmentArt = preload("res://scripts/ui/environment_art.gd")
 
 func run(make_world: Callable) -> Array[String]:
 	var failures: Array[String] = []
@@ -67,7 +69,65 @@ func run(make_world: Callable) -> Array[String]:
 	_explosion_display(make_world, failures)
 	_display_rates(make_world, failures)
 	_weapon_alignment(make_world, failures)
+	_modular_art(make_world, failures)
+	_adjacency_cache(make_world, failures)
 	return failures
+
+func _modular_art(make_world: Callable, failures: Array[String]) -> void:
+	var world=make_world.call()
+	var art=PawnArt.new();art.setup()
+	if not art.ready:failures.append("V3 modular pawn component assets must all load")
+	if art.features.size()!=6 or art.enemy_outfits.size()!=3:failures.append("V3 requires six facial states and three fixed masked enemy types")
+	var unit: Dictionary=world.entity(1)
+	var rng_state: int=world.rng.state
+	var profile:=art.profile(unit)
+	for key in ["face","features","hair","body"]:
+		var changed:=unit.duplicate(true)
+		var expected:=profile.duplicate(true)
+		expected[key]=posmod(int(profile[key])+1,3 if key in ["face","body"] else 6)
+		changed.appearance_profile={"face":profile.face,"features":profile.features,"hair":profile.hair,"body":profile.body}
+		changed.appearance_profile[key]=expected[key]
+		var result:=art.profile(changed)
+		for stable_key in ["face","features","hair","body","top","legs","vest","helmet"]:
+			if result[stable_key]!=expected[stable_key]:failures.append("Changing %s must not replace independent %s" %[key,stable_key])
+	if is_equal_approx(art._rig_width(0,.1)/art._rig_width(1,.1),art._rig_width(0,.6)/art._rig_width(1,.6)):
+		failures.append("Body rigs must change shoulder/waist contours locally, rather than uniform x stretching")
+	unit.weapon_state="aiming"
+	if art.expression_for(unit,2.0)!="aim":failures.append("Aiming must drive the focused facial state")
+	unit.cower=true
+	if art.expression_for(unit,2.0)!="panic":failures.append("Cowering must take facial priority over aiming")
+	if art.expression_for(unit,2.0,false,true)!="hurt" or art.expression_for(unit,2.0,true,true)!="closed":
+		failures.append("Injury and unconscious facial state priorities must remain deterministic")
+	unit.cower=false;unit.weapon_state="idle";unit.pressure_level=0
+	var paused_expression:=art.expression_for(unit,3.1)
+	for repeat in range(30):
+		if art.expression_for(unit,3.1)!=paused_expression:failures.append("Frozen visual time must freeze natural blinking")
+	for facing in [PI*.5,0.0,-PI*.5,PI]:
+		if art.direction_for(facing) not in [0,1,2,3]:failures.append("All cardinal directions need an explicit sprite view")
+	if world.rng.state!=rng_state:failures.append("Appearance combinations, blinking and rig queries must not consume battle randomness")
+
+func _adjacency_cache(make_world: Callable, failures: Array[String]) -> void:
+	var world=make_world.call()
+	var art=EnvironmentArt.new();art.setup()
+	if not art.ready:failures.append("Approved terrain/building art resources must load before gameplay")
+	for kind in ["sandbag","wall"]:
+		var texture: Texture2D=art.textures[kind+"_connections"]
+		if texture.get_size()!=Vector2(512,1536):failures.append("%s must bake all 16 neighbor masks and three stable variants" %kind)
+		for mask in range(16):
+			world.buildings.clear();world.buildings.append(State.building(1000,kind,Rect2i(8,8,1,1)))
+			for i in range(4):
+				if mask&(1<<i):world.buildings.append(State.building(1001+i,kind,Rect2i(Vector2i(8,8)+art.DIRECTIONS[i],Vector2i.ONE)))
+			art.rebuild(world)
+			if art.mask_at(Vector2i(8,8))!=mask:failures.append("%s four-way mask %d is not represented" %[kind,mask])
+	world.buildings.clear()
+	for x in range(5):world.buildings.append(State.building(1000+x,"sandbag",Rect2i(8+x,8,1,1)))
+	art.rebuild(world)
+	var before_hp: float=float(world.buildings[0].hp)
+	world.buildings[2].destroyed=true
+	art.destroyed(world,1002)
+	if art.mask_at(Vector2i(9,8))!=8 or art.mask_at(Vector2i(11,8))!=2:failures.append("Destroyed middle cell must open both adjacent visual ends")
+	if art.last_updated_cells.size()!=5:failures.append("One-cell destruction must only invalidate the cell plus four neighbors")
+	if world.buildings[0].hp!=before_hp or world.buildings.size()!=5:failures.append("Visual connections must preserve separate real building hit points/entities")
 
 func _weapon_alignment(make_world: Callable, failures: Array[String]) -> void:
 	var world = make_world.call()

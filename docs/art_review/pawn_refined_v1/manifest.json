@@ -1,0 +1,175 @@
+{
+  "component_axes": [
+    "features",
+    "face",
+    "hair",
+    "body"
+  ],
+  "profiles": [
+    {
+      "id": "01",
+      "features": 0,
+      "face": 0,
+      "hair": 0,
+      "body": 0
+    },
+    {
+      "id": "02",
+      "features": 1,
+      "face": 1,
+      "hair": 1,
+      "body": 2
+    },
+    {
+      "id": "03",
+      "features": 2,
+      "face": 2,
+      "hair": 2,
+      "body": 1
+    },
+    {
+      "id": "04",
+      "features": 3,
+      "face": 3,
+      "hair": 3,
+      "body": 5
+    },
+    {
+      "id": "05",
+      "features": 4,
+      "face": 4,
+      "hair": 4,
+      "body": 3
+    },
+    {
+      "id": "06",
+      "features": 5,
+      "face": 5,
+      "hair": 5,
+      "body": 4
+    }
+  ],
+  "mixes": [
+    {
+      "id": "mix1",
+      "features": 0,
+      "face": 5,
+      "hair": 2,
+      "body": 2
+    },
+    {
+      "id": "mix2",
+      "features": 4,
+      "face": 2,
+      "hair": 0,
+      "body": 4
+    },
+    {
+      "id": "mix3",
+      "features": 2,
+      "face": 0,
+      "hair": 5,
+      "body": 3
+    }
+  ],
+  "bodies": [
+    {
+      "id": "B01",
+      "name": "纤细",
+      "shoulder": 8.1,
+      "waist": 5.8,
+      "hip": 7.2,
+      "leg": 2.7,
+      "torso": 25,
+      "legs": 19,
+      "neck_y": 45,
+      "foot_y": 94
+    },
+    {
+      "id": "B02",
+      "name": "匀称",
+      "shoulder": 9.7,
+      "waist": 7.2,
+      "hip": 8.5,
+      "leg": 3.1,
+      "torso": 26,
+      "legs": 20,
+      "neck_y": 43,
+      "foot_y": 94
+    },
+    {
+      "id": "B03",
+      "name": "宽肩壮实",
+      "shoulder": 12.7,
+      "waist": 9.1,
+      "hip": 10.1,
+      "leg": 3.7,
+      "torso": 28,
+      "legs": 18,
+      "neck_y": 43,
+      "foot_y": 94
+    },
+    {
+      "id": "B04",
+      "name": "圆润",
+      "shoulder": 11.6,
+      "waist": 12.2,
+      "hip": 12.4,
+      "leg": 4.0,
+      "torso": 29,
+      "legs": 16,
+      "neck_y": 44,
+      "foot_y": 94
+    },
+    {
+      "id": "B05",
+      "name": "娇小",
+      "shoulder": 8.1,
+      "waist": 6.4,
+      "hip": 7.3,
+      "leg": 2.8,
+      "torso": 22,
+      "legs": 15,
+      "neck_y": 52,
+      "foot_y": 94
+    },
+    {
+      "id": "B06",
+      "name": "高挑",
+      "shoulder": 9.1,
+      "waist": 6.6,
+      "hip": 8.0,
+      "leg": 2.9,
+      "torso": 29,
+      "legs": 25,
+      "neck_y": 35,
+      "foot_y": 94
+    }
+  ],
+  "head_local_socket": [
+    32,
+    34
+  ],
+  "foot_anchor": [
+    32,
+    94
+  ],
+  "head_transform": "translate(0, body.neck_y - 34)",
+  "draw_order": [
+    "hair-back",
+    "body",
+    "head: face",
+    "head: features",
+    "head: hair-front",
+    "head: helmet-equipment"
+  ],
+  "structural_constraints": {
+    "arms": false,
+    "hands": false,
+    "leg_gap": "continuous silhouette, faint seam"
+  },
+  "view": "front",
+  "runtime_modified": false,
+  "approval": "pending",
+  "source_sha256": "94bc97e1ddaaa4b67496f4d5835ddf331e9e92a458dedf03f53098fd3ac83abf"
+}

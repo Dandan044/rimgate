@@ -52,11 +52,11 @@ func run(factory: Callable) -> Array[String]:
 	travel = _quiet(factory); walker = travel.units[0]
 	walker.pos = Vector2(8.5, 44.5)
 	travel.submit([1], "posture", {"value": 2}); travel.submit([1], "move", {"position": Vector2(20.5, 44.5)}); travel.step()
-	_check(walker.posture_timer > 0.65 and walker.pos.x > 8.5, "Posture transition retains its .7-second timer while continuous movement continues")
+	_check(walker.posture_timer > 0.65 and walker.pos.x == 8.5, "Posture transition pauses actions for its real .7-second duration")
 	walker.suppression = 60.0; walker.last_threat = travel.time_s
 	var pressed_position: Vector2 = walker.pos
-	travel.step(); _ticks(travel, 30)
-	_check(walker.forced_prone and walker.pos == pressed_position, "Forced suppression still stops movement independently of posture transition")
+	travel.step(); _ticks(travel, 60)
+	_check(walker.forced_prone and walker.pos.x > pressed_position.x, "Forced prone permits movement after its one transition interruption")
 	travel = _quiet(factory); walker = travel.units[0]
 	walker.pos = Vector2(8.5, 44.5)
 	travel.submit([1], "move", {"position": Vector2(10.5, 44.5)}); travel.step()
@@ -79,11 +79,11 @@ func run(factory: Callable) -> Array[String]:
 		if member.pos.distance_to(member.goal) > 0.05 or member.job != "idle": group_arrived = false
 	_check(group_arrived, "All six members converge on distinct group destinations without avoidance deadlock")
 	var reloading = _quiet(factory)
-	reloading.units[0].loaded = 0; reloading.units[0].reload_progress = 1.4; reloading.units[0].reload_reserved = 30
+	reloading.units[0].loaded = 0; reloading.units[0].reload_progress = 1.9; reloading.units[0].reload_reserved = 30; reloading.units[0].reload_stage = 1
 	reloading.submit([1], "move", {"position": Vector2(24.5, 30.5)}); reloading.step()
-	_check(reloading.units[0].reload_progress > 1.4 and reloading.units[0].reload_reserved == 30, "Ordinary movement preserves an in-progress personal reload")
+	_check(absf(float(reloading.units[0].reload_progress) - 1.5) < 0.000001 and reloading.units[0].reload_reserved == 30 and reloading.units[0].reload_stage == 1, "Movement pauses reload at the completed stage and preserves its reservation")
 	reloading.submit([1], "attack", {"target_id": reloading.core().id}); reloading.step()
-	_check(reloading.units[0].reload_progress > 1.4, "Ordinary target assignment preserves personal reload")
+	_check(reloading.units[0].reload_progress >= 1.5 and reloading.units[0].reload_stage == 1, "Target assignment preserves a completed reload stage")
 	reloading.submit([1], "stop"); reloading.step()
 	_check(reloading.units[0].reload_progress < 0.1, "Stop cancels prior reload before a fresh one can start")
 	w.units[0].pos = Vector2(37.5, 37.5)
@@ -139,8 +139,10 @@ func run(factory: Callable) -> Array[String]:
 	_check(absf(u.hp - 50.001) < 0.00001, "Natural healing is 0.001 HP per second")
 	u.suppression = 60.0; u.last_threat = w.time_s; w.unit_system.finalize(w)
 	_check(u.forced_prone and u.posture == 2, "Pressure forces prone")
-	u.suppression = 100.0; w.unit_system.finalize(w)
-	_check(u.job == "rout" and not u.drafted, "Maximum pressure causes undraft and rout")
+	u.suppression = 100.0; u.pressure_event_time = w.time_s; w.unit_system.finalize(w)
+	_check(u.job != "rout" and not u.cower, "One maximum-pressure event cannot skip the prone and cower dwell gates")
+	_press(w, u, 100.0, 0.7); _press(w, u, 100.0, 0.8); _press(w, u, 100.0, 0.35); _press(w, u, 100.0, 0.8)
+	_check(u.job == "rout" and not u.drafted, "Repeated maximum pressure after both dwell gates causes undraft and rout")
 	_check(not w.submit([1], "draft", {"value": true}).ok, "Rout cooldown rejects draft")
 	_ticks(w, 601)
 	_check(w.submit([1], "draft", {"value": true}).ok, "Draft is available when ten-second cooldown expires")
@@ -162,8 +164,10 @@ func run(factory: Callable) -> Array[String]:
 	w = _quiet(factory); w.spawn_wave(0)
 	var enemy: Dictionary = w.units[6]
 	enemy.pos = Vector2(1.5, 24.5)
-	enemy.suppression = 100.0; enemy.last_threat = w.time_s; w.unit_system.finalize(w)
-	_check(enemy.job == "rout" and enemy.goal.distance_to(enemy.spawn_entry) < 0.05, "Enemy rout prefers its own entry even when another entry is nearer")
+	_press(w, enemy, 100.0, 0.0); _press(w, enemy, 100.0, 0.7); _press(w, enemy, 100.0, 0.8); _press(w, enemy, 100.0, 0.35); _press(w, enemy, 100.0, 0.8)
+	_check(enemy.job == "rout" and w.unit_system._reachable(enemy.pos, enemy.goal) and w.unit_system._can_stand(w, enemy.goal), "Enemy rout chooses a legal reachable refuge")
+	for friendly in w.units:
+		if int(friendly.team) == 0: friendly.hold_fire = true
 	_ticks(w, 650)
 	_check(enemy.job != "rout" and enemy.rout_until <= w.time_s, "Enemy AI resumes after suppression cooldown")
 	_test_enemy_contract(factory)
@@ -171,6 +175,8 @@ func run(factory: Callable) -> Array[String]:
 	_test_grid_occupancy(factory)
 	_test_grid_medical_and_commands(factory)
 	_test_auto_posture_recovery(factory)
+	_test_v3_pressure_and_formation(factory)
+	_test_reviewed_unit_edges(factory)
 	_placement_cache_equivalence(factory)
 	return failures
 
@@ -198,22 +204,145 @@ func _placement_cache_equivalence(factory: Callable) -> void:
 			_check(false, "AI placement snapshot differs from live ownership at step %d" % tick); return
 	print("UNIT_PLACEMENT_EQUIVALENCE steps=900 exact_state_events_rng=true")
 
+func _press(w, u: Dictionary, pressure: float, seconds: float) -> void:
+	w.unit_system._ensure_unit(u)
+	w.time_s += seconds
+	u.posture_timer = maxf(0.0, float(u.posture_timer) - seconds)
+	u.suppression = pressure; u.last_threat = w.time_s; u.pressure_event_time = w.time_s
+	u.pressure_event_serial = int(u.pressure_event_serial) + 1
+	w.unit_system.finalize(w)
+
 func _test_auto_posture_recovery(factory: Callable) -> void:
 	var w = _grid_world(factory, [Vector2(5.5, 5.5)])
 	var u: Dictionary = w.units[0]
-	u.suppression = 60.0; u.last_threat = w.time_s; w.unit_system.finalize(w)
+	_press(w, u, 60.0, 0.0)
 	_check(u.forced_prone and u.posture == 2, "Automatic posture respects forced-prone pressure")
-	u.suppression = 39.0; w.time_s = 1.4; w.unit_system.finalize(w)
-	_check(u.forced_prone and u.posture == 2, "Automatic recovery keeps the full forced minimum")
-	w.time_s = 1.5; w.unit_system.finalize(w)
-	_check(not u.forced_prone and u.posture == 0 and absf(float(u.posture_timer) - 0.7) < 0.00001, "Automatic pressure release returns to standing with the real transition timer")
-	u.posture_mode = 1; u.suppression = 60.0; w.unit_system.finalize(w)
-	u.suppression = 39.0; w.time_s += 1.5; w.unit_system.finalize(w)
-	_check(not u.forced_prone and u.posture == 1, "Manual crouch is restored instead of automatic standing")
+	_press(w, u, 24.0, 0.7)
+	_press(w, u, 24.0, 1.4)
+	_check(u.forced_prone and u.posture == 2, "Recovery requires 1.5 stable seconds below its release threshold")
+	_press(w, u, 24.0, 0.1)
+	_check(not u.forced_prone and u.pressure_level == 0 and u.posture == 0 and absf(float(u.posture_timer) - 0.7) < 0.00001, "Automatic release restores standing after a full stable interval")
+	u.posture_mode = 1; u.posture_timer = 0.0
+	_press(w, u, 60.0, 0.0); _press(w, u, 24.0, 0.7); _press(w, u, 24.0, 1.5)
+	_check(not u.forced_prone and u.posture == 1, "Manual crouch preference survives forced prone and release")
 	u.posture_mode = -1; u.posture = 2; u.conscious = false; u.hp = 35.1; w.unit_system.finalize(w)
 	_check(u.conscious and u.posture == 0 and float(u.posture_timer) > 0.69, "Automatic wake-up restores standing and preserves transition timing")
 	u.posture_mode = 2; u.posture = 2; u.conscious = false; u.hp = 35.1; w.unit_system.finalize(w)
 	_check(u.conscious and u.posture == 2, "Manual prone remains locked after waking")
+
+func _test_v3_pressure_and_formation(factory: Callable) -> void:
+	var w = _grid_world(factory, [Vector2(8.5, 12.5), Vector2(10.5, 12.5), Vector2(12.5, 12.5)])
+	var original := var_to_bytes([w.units, w.pending_orders, w.unit_system.reserved_cells, w.rng.state])
+	var planned: Dictionary = w.unit_system.plan_formation(w, [3, 1, 2], Vector2(12.5, 17.5), Vector2.RIGHT, 3.0, -PI / 2.0)
+	_check(planned.ok and planned.allocations.size() == 3, "Three-member dragged formation plans a complete allocation")
+	_check(original == var_to_bytes([w.units, w.pending_orders, w.unit_system.reserved_cells, w.rng.state]), "Formation preview is a pure query including RNG and reservations")
+	var exact: Dictionary = {}
+	for allocation in planned.allocations.values(): exact[allocation.goal] = true
+	_check(exact.has(Vector2(9.5, 17.5)) and exact.has(Vector2(12.5, 17.5)) and exact.has(Vector2(15.5, 17.5)), "Unobstructed formation keeps all ideal slots rather than bunching near the squad")
+	w.set_paused(true)
+	_check(w.submit([3, 1, 2], "move", {"position": Vector2(12.5, 17.5), "formation": {"axis": Vector2.RIGHT, "spacing": 3.0, "facing": -PI / 2.0}}).ok, "Paused formation commits its reviewed allocation")
+	_check(var_to_bytes(w.pending_orders[0].data._allocations) == var_to_bytes(planned.allocations), "Frozen paused allocation exactly matches the preview")
+	w.set_paused(false); _safe_ticks(w, 500, "v3 dragged formation")
+	for member in w.units:
+		_check(member.pos == planned.allocations[member.id].goal and absf(float(member.facing) + PI / 2.0) < 0.000001, "Formation reaches its frozen cell and final facing")
+	# A blocked ideal is repaired locally; a full lack of legal slots rejects all.
+	w.buildings.append(State.building(1001, "wall", Rect2i(12, 20, 1, 1))); w.unit_system.rebuild_navigation(w)
+	planned = w.unit_system.plan_formation(w, [1, 2, 3], Vector2(12.5, 20.5), Vector2.RIGHT, 2.0, 0.0)
+	_check(planned.ok, "Formation repairs a blocked ideal inside its two-cell neighborhood")
+	if planned.ok:
+		for allocation in planned.allocations.values(): _check(allocation.goal != Vector2(12.5, 20.5), "Repaired formation never uses the wall cell")
+	w.buildings.append(State.building(1002, "wall", Rect2i(5, 23, 16, 8))); w.unit_system.rebuild_navigation(w)
+	planned = w.unit_system.plan_formation(w, [1, 2, 3], Vector2(12.5, 26.5), Vector2.RIGHT, 1.0, 0.0)
+	_check(not planned.ok and planned.allocations.is_empty(), "Insufficient formation space returns no partial allocation")
+	w = _grid_world(factory, [Vector2(5.5, 5.5)])
+	var u: Dictionary = w.units[0]
+	var enemy: Dictionary = State.unit(100, 1, Vector2(5.5, 13.5)); enemy.ai_next = INF; enemy.hold_fire = true
+	w.units.append(enemy); w.unit_system._ensure_unit(enemy)
+	w.step()
+	_check(u.posture == 2, "Automatic open-ground engagement selects the lowest fireable pose")
+	_ticks(w, 50)
+	_check(w.unit_system.can_act(w, u, "fire").ok and int(w.stats.rifle_shots) == 0, "Settled prone can act without granting instant aim completion")
+	w.buildings.append(State.building(1001, "sandbag", Rect2i(5, 6, 1, 1))); w.unit_system.rebuild_navigation(w)
+	u.auto_posture_next = 0.0; w.unit_system._auto_posture(w, u)
+	_check(u.posture == 1, "Automatic pose rises only enough to clear a nearby sandbag")
+	u.posture_mode = 2; u.posture_timer = 0.0; w.unit_system._auto_posture(w, u)
+	_check(u.posture == 2 and not w.combat_system.can_fire_pose(w, u, enemy).ok, "Manual prone does not rise to bypass its blocked muzzle")
+	w.buildings.remove_at(1); w.unit_system.rebuild_navigation(w)
+	u.posture_mode = -1; u.posture_timer = 0.0
+	_press(w, u, 60.0, 0.0)
+	var pose_events: int = w.events.filter(func(e): return e.type == "unit_state_changed" and int(e.get("pressure_level", 0)) == 2).size()
+	_press(w, u, 70.0, 0.1); _press(w, u, 70.0, 0.1)
+	_check(w.events.filter(func(e): return e.type == "unit_state_changed" and int(e.get("pressure_level", 0)) == 2).size() == pose_events, "Same-level pressure does not repeatedly restart the posture action")
+	u.posture_timer = 0.0
+	_check(w.unit_system.can_act(w, u, "move").ok and w.unit_system.can_act(w, u, "fire").ok, "Forced prone permits compatible movement and firing after transition")
+	_press(w, u, 100.0, 0.0); _press(w, u, 100.0, 0.8)
+	_check(u.cower and u.pressure_level == 3, "A later pressure event after settled prone enters cower")
+	for action in ["move", "fire", "reload", "operate", "treat", "rescue"]: _check(not w.unit_system.can_act(w, u, action).ok, "Cower blocks active action " + action)
+	u.bleed_rate = 0.1; var hp: float = u.hp
+	_check(w.submit([1], "move", {"position": Vector2(8.5, 5.5)}).ok, "Cowering personnel accept a replacement pending intent")
+	w.step()
+	_check(u.job == "move" and u.pos == Vector2(5.5, 5.5) and u.hp < hp, "Cower retains movement intent while bleeding and staying still")
+	_check(not w.submit([1], "rescue", {"target_id": 1}).ok, "Cower never turns a conscious person into a rescue target")
+	_press(w, u, 100.0, 0.35); _press(w, u, 100.0, 0.8)
+	_check(u.job == "rout" and not u.drafted and u.posture == 0 and not u.cower, "Continued post-cower pressure replaces intent with standing rout")
+	_check(not w.submit([1], "draft", {"value": true}).ok, "Rout locks out drafting for its cooldown")
+	# Roles and reload stages survive a pressure pause instead of disappearing.
+	w = _grid_world(factory, [Vector2(20.5, 23.5)])
+	u = w.units[0]
+	var station: Dictionary = State.building(1001, "mg", Rect2i(20, 22, 1, 1)); w.buildings.append(station); w.unit_system.rebuild_navigation(w)
+	w.submit([1], "operate", {"target_id": station.id}); _ticks(w, 30)
+	station.reload_reserved = 100; station.reload_stage = 1; station.reload_progress = 3.4
+	_press(w, u, 60.0, 0.0)
+	_check(u.station_id == station.id and station.crew.has(1) and station.reload_stage == 1 and absf(float(station.reload_progress) - 2.5) < 0.000001, "Pressure pause keeps station assignment and its completed reload stage")
+	_check(not w.unit_system.can_act(w, u, "operate", 2).ok and w.unit_system.can_act(w, u, "operate", 1).ok == false, "Forced prone forbids incompatible hypothetical station poses")
+	_press(w, u, 20.0, 0.7); _press(w, u, 20.0, 1.5)
+	_check(u.station_id == station.id and u.posture == 1 and w.unit_system.can_act(w, u, "operate", 1).ok, "Pressure release returns to a compatible station pose without reassigning")
+	_check(w.submit([1], "fire_control", {"value": true}).ok and w.submit([1], "target_policy", {"value": "strict"}).ok, "Independent personal fire controls accept valid settings")
+	w.step(); _check(u.hold_fire and u.target_policy == "strict" and not station.get("hold_fire", false), "Changing operator fire controls does not overwrite the station")
+
+func _test_reviewed_unit_edges(factory: Callable) -> void:
+	var w = _grid_world(factory, [Vector2(2.5, 5.5)])
+	var shooter: Dictionary = w.units[0]
+	var blocked := State.unit(100, 1, Vector2(5.5, 5.5)); var visible := State.unit(101, 1, Vector2(2.5, 15.5))
+	w.units.append(blocked); w.units.append(visible)
+	w.buildings.append(State.building(1001, "wall", Rect2i(4, 5, 1, 1))); w.unit_system.setup(w)
+	var random_before: int = w.rng.state
+	w.unit_system._auto_posture(w, shooter)
+	var chosen: Dictionary = w.combat_system._choose_target(w, shooter.duplicate(true), preload("res://scripts/sim/battle_config.gd").rifle())
+	_check(shooter.posture == 2 and int(chosen.get("id", -1)) == 101, "Automatic posture uses the actual selector's legal open target when a nearer enemy is behind a wall")
+	shooter.target_id = 999; shooter.posture_timer = 0.0; shooter.auto_posture_next = 0.0
+	w.unit_system._auto_posture(w, shooter)
+	_check(shooter.target_id == 999 and w.rng.state == random_before, "Automatic pose target selection changes neither actual intention nor combat randomness")
+	# Completed chambering work belongs to the personal weapon, not a temporary
+	# high-priority task. Observe the real task and its eventual hand-off.
+	for task in ["treat", "rescue", "resupply"]:
+		w = _grid_world(factory, [Vector2(2.5, 5.5), Vector2(3.5, 5.5)])
+		var worker: Dictionary = w.units[0]; var patient: Dictionary = w.units[1]
+		worker.loaded = 0; worker.reserve = 150; worker.reload_reserved = 30; worker.reload_stage = 1; worker.reload_progress = 1.9; worker.hold_fire = true
+		patient.hp = 20.0 if task == "rescue" else 70.0; patient.conscious = task != "rescue"; patient.bleed_rate = .1
+		w.medical_slots.assign([Vector2(8.5, 5.5)])
+		var target := 2
+		if task == "resupply":
+			var station := State.building(1001, "mg", Rect2i(8, 5, 1, 1)); w.buildings.append(station); target = int(station.id)
+			w.supplies.append({"id": 2000, "kind": "mg_ammo", "amount": 200, "pos": Vector2(4.5, 5.5), "reserved_by": -1, "carried_by": -1, "delivered": false})
+			w.unit_system.rebuild_navigation(w)
+		_check(w.submit([1], task, {"target_id": target}).ok, "High priority " + task + " order is accepted during chambering")
+		w.step()
+		_check(worker.job == task and worker.reload_reserved == 30 and worker.reload_stage == 1 and absf(float(worker.reload_progress) - 1.5) < .000001, task + " pauses personal reload at its completed stage")
+		_ticks(w, 60)
+		_check(worker.reload_reserved == 30 and worker.reload_stage == 1 and absf(float(worker.reload_progress) - 1.5) < .000001, task + " cannot advance the suspended personal reload while working")
+		var steps := 0
+		while worker.job != "idle" and steps < 1800: w.step(); steps += 1
+		_check(worker.job == "idle" and worker.path.is_empty() and int(worker.path_index) == 0, task + " completion clears its task path before returning to personal weapon work")
+		_check(worker.reload_stage == 1 and worker.reload_reserved == 30 and float(worker.reload_progress) >= 1.5, task + " completion retains the completed reload stage")
+		_ticks(w, 120)
+		_check(worker.loaded == 30 and worker.reserve == 120 and worker.reload_reserved == 0, task + " resumes the remaining chambering work and conserves its real ammunition")
+	for cancellation in ["stop", "undraft", "death"]:
+		w = _grid_world(factory, [Vector2(2.5, 5.5)])
+		var worker: Dictionary = w.units[0]; worker.loaded = 0; worker.reload_reserved = 30; worker.reload_stage = 1; worker.reload_progress = 1.9
+		if cancellation == "death": worker.hp = 0.0; w.unit_system.finalize(w)
+		else: w.unit_system.apply_order(w, [1], "stop" if cancellation == "stop" else "draft", {} if cancellation == "stop" else {"value": false})
+		_check(worker.reload_reserved == 0 and worker.reload_stage == 0 and worker.reload_progress == 0.0 and worker.reserve == 150, "Explicit " + cancellation + " cancels the personal reload reservation without inventing ammunition")
 
 func _grid_world(factory: Callable, positions: Array):
 	var w = factory.call()
@@ -366,7 +495,7 @@ func _test_grid_medical_and_commands(factory: Callable) -> void:
 	enemy = State.unit(100, 1, Vector2(32.5, 10.5)); enemy.job = "treat"; w.units.append(enemy); w.unit_system._ensure_unit(enemy); enemy.ai_next = INF
 	_check(w.submit_station_attack(int(mortar.id), int(enemy.id)).ok, "Mortar accepts unit-target tracking before ground replacement")
 	_ticks(w, 60)
-	_check(int(mortar.target_id) == int(enemy.id) and float(mortar.aim_progress) > 0.9, "Unit-target mortar has real partially completed aim")
+	_check(int(mortar.target_id) == int(enemy.id) and float(mortar.aim_progress) > 0.5, "Unit-target mortar starts aiming after its real crouch transition")
 	var ground := Vector2(45.5, 15.5)
 	_check(w.submit([1], "fire", {"target_id": mortar.id, "position": ground}).ok, "Ground bombardment can replace a unit-target command")
 	w.step()
@@ -478,3 +607,4 @@ func _test_logistics_medical_contract(factory: Callable) -> void:
 	w.submit([1], "treat", {"target_id": 2}); _ticks(w, 150)
 	w.submit([1], "stop"); w.step()
 	_check(w.units[0].bandages == 2 and w.units[1].bleed_rate == 0.1 and not w.units[0].treatment_reserved, "Interrupted six-second treatment spends no bandage and leaves the wound active")
+

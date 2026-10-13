@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="13 3 38 38"><g id="hair-back" fill="#634739" stroke="#263b3b" stroke-width=".78" stroke-linejoin="round" stroke-linecap="round"><path d="M20.5 20.8Q17.9 21.2 18.9 23.2Q17.5 25.1 19.6 26.8L22 24.9L22.1 21Z M43.5 20.8Q46.1 21.2 45.1 23.2Q46.5 25.1 44.4 26.8L42 24.9L41.9 21Z"/></g><g id="head" fill="#bc9473" stroke="#263b3b" stroke-linejoin="round"><ellipse cx="20.8" cy="24.8" rx="1.45" ry="2.05" stroke-width=".65"/><ellipse cx="43.2" cy="24.8" rx="1.45" ry="2.05" stroke-width=".65"/><path d="M32 10C24 10 21.6 14.9 22 21Q17.9 28.5 23.2 32.2Q27.3 35.4 32 35.2Q36.7 35.4 40.8 32.2Q46.1 28.5 42 21C42.4 14.9 40 10 32 10Z" stroke-width="1.1"/></g><g xmlns="http://www.w3.org/2000/svg" id="features"><g transform="translate(26.2 26.4) scale(0.8613 0.8439) translate(-26.2 -26.4)"><g transform="">
+    <defs><clipPath id="eye-0"><path d="M22.3 24.5Q25.6 23.3 30.1 24.8L29.4 28.8Q26.5 29.8 23.5 28.7Z" /></clipPath>
+    <linearGradient id="iris-eye-0" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#423039" /><stop offset=".62" stop-color="#a46066" /><stop offset="1" stop-color="#e8b3a4" /></linearGradient></defs>
+    <path d="M22.2 23.45Q25.7 22.3 30.2 23.900000000000002L30 25.2Q25.7 23.3 22.3 24.9Z" fill="#6c6b60" opacity=".18" />
+    <path d="M22.3 24.5Q25.6 23.3 30.1 24.8L29.4 28.8Q26.5 29.8 23.5 28.7Z" fill="#f7f5e9" stroke="#171f24" stroke-width="0.44" />
+    <g clip-path="url(#eye-0)"><g transform="translate(0 0)">
+    <path d="M24.1 23.4Q26.5 22.8 28.9 23.4L28.7 28.6Q26.6 29.8 24.3 28.6Z" fill="url(#iris-eye-0)" stroke="#171f24" stroke-width="0.52" />
+    <rect x="26" y="23.7" width=".9" height="3.6" rx=".4" fill="#171f24" opacity=".75" />
+    <ellipse cx="24.9" cy="25.5" rx=".43" ry=".62" fill="#fffbed" opacity=".9" />
+    </g></g>
+    <path d="M21.9 24.4Q25.6 22.3 30.5 24.7L29.9 25.85Q25.6 23.8 22.7 25.65Z" fill="#171f24" />
+    </g></g><g transform="translate(37.8 26.4) scale(0.8613 0.8439) translate(-37.8 -26.4)"><g transform="translate(64 0) scale(-1 1)">
+    <defs><clipPath id="eye-1"><path d="M22.3 24.5Q25.6 23.3 30.1 24.8L29.4 28.8Q26.5 29.8 23.5 28.7Z" /></clipPath>
+    <linearGradient id="iris-eye-1" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#423039" /><stop offset=".62" stop-color="#a46066" /><stop offset="1" stop-color="#e8b3a4" /></linearGradient></defs>
+    <path d="M22.2 23.45Q25.7 22.3 30.2 23.900000000000002L30 25.2Q25.7 23.3 22.3 24.9Z" fill="#6c6b60" opacity=".18" />
+    <path d="M22.3 24.5Q25.6 23.3 30.1 24.8L29.4 28.8Q26.5 29.8 23.5 28.7Z" fill="#f7f5e9" stroke="#171f24" stroke-width="0.44" />
+    <g clip-path="url(#eye-1)"><g transform="translate(0 0)">
+    <path d="M24.1 23.4Q26.5 22.8 28.9 23.4L28.7 28.6Q26.6 29.8 24.3 28.6Z" fill="url(#iris-eye-1)" stroke="#171f24" stroke-width="0.52" />
+    <rect x="26" y="23.7" width=".9" height="3.6" rx=".4" fill="#171f24" opacity=".75" />
+    <ellipse cx="24.9" cy="25.5" rx=".43" ry=".62" fill="#fffbed" opacity=".9" />
+    </g></g>
+    <path d="M21.9 24.4Q25.6 22.3 30.5 24.7L29.9 25.85Q25.6 23.8 22.7 25.65Z" fill="#171f24" />
+    </g></g><path d="M23.3 23.2Q26.3 21.7 29.2 23M34.8 23Q37.7 21.7 40.7 23.2" fill="none" stroke="#20272b" stroke-width="0.664" stroke-linecap="round" /><path d="M31.2 30.2Q32 30.7 32.8 30.2" fill="none" stroke="#766354" stroke-width="0.304" stroke-linecap="round" /><path d="M30.5 32.4Q32 33.3 33.5 32.4" fill="none" stroke="#72584e" stroke-width="0.376" stroke-linecap="round" /></g><g id="hair-front" fill="#634739" stroke="#263b3b" stroke-width=".78" stroke-linejoin="round" stroke-linecap="round"><path d="M23.6 19.9Q24.2 22.3 26.3 21.2Q28.1 23.2 30 21.1Q32 22.5 34 21.1Q35.9 23.2 37.7 21.2Q39.8 22.3 40.4 19.9L39.4 19.1H24.6Z"/><path d="M20.3 22.2Q19.1 23.6 20.1 24.5M43.7 22.2Q44.9 23.6 43.9 24.5" fill="none" stroke="#8b6450" stroke-width=".48"/></g><g xmlns="http://www.w3.org/2000/svg" stroke="#263b3b" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"><path d="M18 21V16Q18 7 32 7Q46 7 46 16V21Q32 17 18 21Z" fill="#d7dfd8" /><path d="M22 16H42" stroke="#92d8c8" stroke-width="2.0" /></g></svg>

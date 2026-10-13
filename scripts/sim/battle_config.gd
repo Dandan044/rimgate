@@ -11,7 +11,7 @@ const VOLUMES := [1.0, 0.65, 0.35]
 const RADII := [0.22, 0.18, 0.13]
 const POSTURE_SPEED := [1.0, 0.75, 0.35]
 const STYLE_AIM := [0.25, 0.55, 0.85]
-const STYLE_ACCURACY := [0.65, 1.0, 1.25]
+const STYLE_ACCURACY := [0.35, 1.0, 1.6]
 const STYLE_RECOVERY := [1.4, 1.0, 0.7]
 # v0.2 tuning defaults: one full normal rifle cycle is 2.25 aim + .25 burst + .5 recovery.
 const RIFLE_AIM_SECONDS := [0.65, 2.25, 3.8]

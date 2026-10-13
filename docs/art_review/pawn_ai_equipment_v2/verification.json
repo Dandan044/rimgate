@@ -1,0 +1,268 @@
+{
+  "assemblies": [
+    {
+      "file": "01-base.svg",
+      "size": [
+        512,
+        832
+      ],
+      "alpha_bbox": [
+        146,
+        132,
+        366,
+        746
+      ]
+    },
+    {
+      "file": "01-heavy.svg",
+      "size": [
+        512,
+        832
+      ],
+      "alpha_bbox": [
+        139,
+        119,
+        373,
+        746
+      ]
+    },
+    {
+      "file": "01-light.svg",
+      "size": [
+        512,
+        832
+      ],
+      "alpha_bbox": [
+        146,
+        132,
+        366,
+        746
+      ]
+    },
+    {
+      "file": "01-standard.svg",
+      "size": [
+        512,
+        832
+      ],
+      "alpha_bbox": [
+        139,
+        119,
+        373,
+        746
+      ]
+    },
+    {
+      "file": "02-base.svg",
+      "size": [
+        512,
+        832
+      ],
+      "alpha_bbox": [
+        146,
+        132,
+        365,
+        746
+      ]
+    },
+    {
+      "file": "02-heavy.svg",
+      "size": [
+        512,
+        832
+      ],
+      "alpha_bbox": [
+        139,
+        119,
+        383,
+        746
+      ]
+    },
+    {
+      "file": "02-light.svg",
+      "size": [
+        512,
+        832
+      ],
+      "alpha_bbox": [
+        146,
+        132,
+        365,
+        746
+      ]
+    },
+    {
+      "file": "02-standard.svg",
+      "size": [
+        512,
+        832
+      ],
+      "alpha_bbox": [
+        139,
+        119,
+        383,
+        746
+      ]
+    },
+    {
+      "file": "03-base.svg",
+      "size": [
+        512,
+        832
+      ],
+      "alpha_bbox": [
+        146,
+        132,
+        366,
+        746
+      ]
+    },
+    {
+      "file": "03-heavy.svg",
+      "size": [
+        512,
+        832
+      ],
+      "alpha_bbox": [
+        139,
+        119,
+        373,
+        746
+      ]
+    },
+    {
+      "file": "03-light.svg",
+      "size": [
+        512,
+        832
+      ],
+      "alpha_bbox": [
+        146,
+        132,
+        366,
+        746
+      ]
+    },
+    {
+      "file": "03-standard.svg",
+      "size": [
+        512,
+        832
+      ],
+      "alpha_bbox": [
+        139,
+        119,
+        373,
+        746
+      ]
+    }
+  ],
+  "sources": [
+    {
+      "file": "base-bodies.png",
+      "size": [
+        1751,
+        898
+      ],
+      "mode": "RGBA",
+      "alpha_range": [
+        0,
+        255
+      ],
+      "transparent_fraction": 0.69049
+    },
+    {
+      "file": "faces.png",
+      "size": [
+        1752,
+        897
+      ],
+      "mode": "RGBA",
+      "alpha_range": [
+        0,
+        255
+      ],
+      "transparent_fraction": 0.63869
+    },
+    {
+      "file": "features.png",
+      "size": [
+        1983,
+        793
+      ],
+      "mode": "RGBA",
+      "alpha_range": [
+        0,
+        255
+      ],
+      "transparent_fraction": 0.91642
+    },
+    {
+      "file": "hair.png",
+      "size": [
+        1536,
+        1024
+      ],
+      "mode": "RGBA",
+      "alpha_range": [
+        0,
+        254
+      ],
+      "transparent_fraction": 0.5796
+    },
+    {
+      "file": "heavy-kit.png",
+      "size": [
+        1749,
+        899
+      ],
+      "mode": "RGBA",
+      "alpha_range": [
+        0,
+        255
+      ],
+      "transparent_fraction": 0.62706
+    },
+    {
+      "file": "helmets.png",
+      "size": [
+        1774,
+        887
+      ],
+      "mode": "RGBA",
+      "alpha_range": [
+        0,
+        255
+      ],
+      "transparent_fraction": 0.77576
+    },
+    {
+      "file": "light-kit.png",
+      "size": [
+        1751,
+        898
+      ],
+      "mode": "RGBA",
+      "alpha_range": [
+        0,
+        255
+      ],
+      "transparent_fraction": 0.67214
+    },
+    {
+      "file": "standard-kit.png",
+      "size": [
+        1750,
+        899
+      ],
+      "mode": "RGBA",
+      "alpha_range": [
+        0,
+        255
+      ],
+      "transparent_fraction": 0.66398
+    }
+  ],
+  "runtime_sha256": "94bc97e1ddaaa4b67496f4d5835ddf331e9e92a458dedf03f53098fd3ac83abf",
+  "runtime_unchanged": true
+}

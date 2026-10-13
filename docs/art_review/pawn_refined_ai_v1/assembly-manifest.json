@@ -1,0 +1,36 @@
+{
+  "status": "manual registration study; no runtime replacement",
+  "face_source": "faces-v2.png",
+  "hair_source": "hair-v1.png",
+  "source_pixels_unchanged": true,
+  "combinations": [
+    {
+      "file": "01-assembled.svg",
+      "features": 0,
+      "face": 0,
+      "hair": 0,
+      "body": 0
+    },
+    {
+      "file": "02-assembled.svg",
+      "features": 1,
+      "face": 1,
+      "hair": 1,
+      "body": 1
+    },
+    {
+      "file": "03-assembled.svg",
+      "features": 2,
+      "face": 2,
+      "hair": 2,
+      "body": 2
+    },
+    {
+      "file": "04-assembled.svg",
+      "features": 0,
+      "face": 2,
+      "hair": 1,
+      "body": 2
+    }
+  ]
+}

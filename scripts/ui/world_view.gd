@@ -4,6 +4,11 @@ const GRID: float = 64.0
 const Presentation = preload("res://scripts/ui/presentation_state.gd")
 const Ground = preload("res://scripts/ui/ground_view.gd")
 const Weapon = preload("res://scripts/sim/weapon_pose.gd")
+const PawnArt = preload("res://scripts/ui/pawn_art.gd")
+const EnvironmentArt = preload("res://scripts/ui/environment_art.gd")
+var environment_art = EnvironmentArt.new()
+var pawn_art = PawnArt.new()
+var use_legacy_pawns := false
 var motion = Presentation.new()
 var screen: Node
 var world
@@ -19,6 +24,13 @@ var font: Font
 func _ready() -> void:
 	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	friendly = load("res://assets/art/vector/friendly_atlas.svg")
+	pawn_art.setup()
+	environment_art.setup()
+	var clean_shader:=Shader.new()
+	clean_shader.code="shader_type canvas_item; varying vec4 tint; void vertex(){tint=COLOR;} void fragment(){vec4 c=texture(TEXTURE,UV);COLOR=vec4(c.rgb,smoothstep(.40,.80,c.a))*tint;}"
+	var clean_material:=ShaderMaterial.new();clean_material.shader=clean_shader;material=clean_material
+	for argument in OS.get_cmdline_user_args():
+		if argument == "--pawn-style=classic": use_legacy_pawns = true
 	enemy = load("res://assets/art/vector/enemy_atlas.svg")
 	heavy = load("res://assets/art/vector/heavy_atlas.svg")
 	props = load("res://assets/art/vector/props_atlas.svg")
@@ -38,6 +50,8 @@ func tick(_dt: float) -> void:
 
 func reset_presentation() -> void:
 	motion.reset(world)
+	environment_art.rebuild(world)
+	pawn_art.head_history.clear()
 
 func set_running(running: bool) -> void:
 	if world.phase in ["won", "lost"]: motion.finish_interval()
@@ -59,9 +73,14 @@ func advance_display(dt: float) -> void:
 
 func on_event(event: Dictionary) -> void:
 	var kind: String = event.get("type", "")
-	if kind in ["weapon_fired", "projectile_impact", "explosion", "damage", "building_destroyed"]:
-		var duration: float = 0.13 if kind == "weapon_fired" else (1.2 if kind == "explosion" else (0.18 if kind == "damage" else 0.4))
-		effects.append({"kind": kind, "age": 0.0, "life": duration, "pos": event.get("pos", Vector2.ZERO) * GRID, "data": event})
+	if kind=="building_destroyed": environment_art.destroyed(world,int(event.get("entity_id",-1)))
+	if kind in ["weapon_fired", "projectile_impact", "explosion", "damage", "building_destroyed","reload_stage","unit_state_changed","unit_action_stage","station_changed","unit_treated"]:
+		var duration: float = 0.13 if kind == "weapon_fired" else (1.2 if kind == "explosion" else (0.18 if kind == "damage" else .55 if kind in ["reload_stage","unit_state_changed","unit_action_stage","station_changed","unit_treated"] else 0.4))
+		var location: Vector2=event.get("pos",Vector2.ZERO)
+		if not event.has("pos"):
+			var holder: Dictionary=world.entity(int(event.get("entity_id",event.get("unit_id",-1))))
+			if not holder.is_empty():location=Vector2(holder.pos)
+		effects.append({"kind":kind,"age":0.0,"life":duration,"pos":location*GRID,"data":event})
 		if effects.size() > 160:
 			effects.pop_front()
 
@@ -79,7 +98,7 @@ func _draw() -> void:
 	for box in world.supplies:
 		if not box.get("delivered", false) and int(box.get("carried_by", -1)) < 0 and int(box.get("amount", 0)) > 0:
 			var point: Vector2 = box.pos * GRID
-			_prop(12 if box.kind == "mg_ammo" else 13, Rect2(point - Vector2(18, 14), Vector2(36, 28)))
+			environment_art.draw_prop(self,"ammo_box",Rect2(point-Vector2(22,19),Vector2(44,38)),Color.WHITE if box.kind=="mg_ammo" else Color(1,.90,.72))
 	for thing in things:
 		if thing.kind == "building":
 			_draw_building(thing.data)
@@ -96,7 +115,8 @@ func _draw_building(b: Dictionary) -> void:
 	var point: Vector2 = b.pos * GRID
 	var rect: Rect2 = Rect2(Vector2(b.rect.position) * GRID, Vector2(b.rect.size) * GRID)
 	if b.destroyed:
-		_prop(3, rect.grow(-3), Color(0.8, 0.8, 0.8, 0.8))
+		if b.kind=="core":environment_art.draw_core(self,b,rect,visual_time)
+		else:_prop(3,rect.grow(-3),Color(.8,.8,.8,.8))
 		return
 	var selected: bool = int(screen.selected_building) == int(b.id)
 	# Ground contact shadows use the same lower-right light direction as the atlas.
@@ -107,20 +127,17 @@ func _draw_building(b: Dictionary) -> void:
 	if selected:
 		draw_rect(rect.grow(6), Color("b6ead6"), false, 2.5)
 	match String(b.kind):
-		"sandbag": _prop(0, rect.grow(8))
-		"wall": _prop(1, Rect2(rect.position - Vector2(0, 22), rect.size + Vector2(0, 22)))
-		"crate": _prop(2, rect.grow(6))
+		"sandbag","wall": environment_art.draw_connections(self,b)
+		"crate": environment_art.draw_prop(self,"ammo_box",rect.grow(2))
 		"core":
-			_prop(4, rect.grow(8))
-			var pulse: float = 0.5 + 0.5 * sin(visual_time * 1.8)
-			draw_arc(point, 48 + pulse * 3, 0, TAU, 48, Color(0.42, 0.93, 0.86, 0.4 + pulse * 0.2), 3, true)
+			environment_art.draw_core(self,b,rect,visual_time)
 		"mg", "mortar":
-			_prop(6 if b.kind == "mg" else 8, rect.grow(10))
+			environment_art.draw_prop(self,"mg_base" if b.kind=="mg" else "mortar_base",rect.grow(10))
 			var weapon_angle: float = float(b.get("weapon_facing", b.facing))
 			var pose: Dictionary = Weapon.station(b.pos, weapon_angle, b.kind)
 			var kick: float = _recoil(int(b.id))
 			draw_set_transform(Vector2(pose.anchor) * GRID - Vector2.from_angle(weapon_angle) * kick, weapon_angle)
-			_prop(7 if b.kind == "mg" else 9, pose.sprite_rect)
+			environment_art.draw_prop(self,"mg_gun" if b.kind=="mg" else "mortar_gun",pose.sprite_rect)
 			draw_set_transform(Vector2.ZERO)
 			for slot in range(int(b.capacity)):
 				var active: bool = slot < world.projected_crew(int(b.id)).size()
@@ -166,11 +183,15 @@ func _draw_unit(u: Dictionary) -> void:
 	var work_dip: float = 4.0 + sin(visual_time * 8.0) * 1.4 if working else 0.0
 	var sway: float = sin(visual_time * 11 + float(u.id)) * 1.2 if u.velocity.length() > 0.1 and not down else 0.0
 	var hands_busy: bool = int(u.get("crate_id", -1)) >= 0 or int(u.get("rescued_id", -1)) >= 0 or u.job == "treat"
-	var has_weapon: bool = not down and not hands_busy and u.job != "operate"
+	var has_weapon: bool = not down and not hands_busy and u.job != "operate" and not bool(u.get("cower",false))
 	var weapon_behind: bool = posture != 2 and sin(facing) < -0.35
-	if has_weapon and weapon_behind:
+	var component_pawn: bool = pawn_art.ready and not use_legacy_pawns
+	if has_weapon and weapon_behind and not component_pawn:
 		_draw_rifle(point + body_offset, facing, posture, int(u.id))
-	if posture == 2:
+	if component_pawn:
+		var weapon_layer: Callable = _draw_rifle.bind(point + body_offset, facing, posture, int(u.id)) if has_weapon else Callable()
+		pawn_art.draw_pawn(self, u, point + body_offset, facing, posture, down, visual_time, tint, work_dip, weapon_layer)
+	elif posture == 2:
 		draw_set_transform(point + body_offset, facing if not down else 0.0)
 		draw_texture_rect_region(texture, Rect2(-body_size * 0.5, body_size), frame, tint)
 		draw_set_transform(Vector2.ZERO)
@@ -181,23 +202,31 @@ func _draw_unit(u: Dictionary) -> void:
 		if int(box.get("carried_by", -1)) == int(u.id): carrying_crate = true; break
 	var rescued: Dictionary = world.entity(int(u.get("rescued_id", -1)))
 	var carrying_person: bool = not rescued.is_empty() and int(rescued.get("carrier_id", -1)) == int(u.id)
-	if has_weapon and not weapon_behind:
+	if has_weapon and not weapon_behind and not component_pawn:
 		_draw_rifle(point + body_offset, facing, posture, int(u.id))
 	if working:
 		var hands := point + Vector2(0, -20 + work_dip)
-		draw_line(hands + Vector2(-10, 0), hands + Vector2(8, sin(visual_time * 10.0) * 3.0), Color("d4d4b5"), 5, true)
+		if use_legacy_pawns: draw_line(hands + Vector2(-10, 0), hands + Vector2(8, sin(visual_time * 10.0) * 3.0), Color("d4d4b5"), 5, true)
 		draw_rect(Rect2(hands + Vector2(0, -4), Vector2(10, 7)), Color("edf0dc"))
 		_progress_at(point, float(u.job_timer) / 6.0, "止血", Color("c5dfb7"))
-	elif u.job == "operate" and u.stage == "station":
+	elif u.job == "operate" and u.stage == "station" and use_legacy_pawns:
 		var station: Dictionary = world.entity(int(u.station_id))
 		if not station.is_empty():
 			var toward: Vector2 = (Vector2(station.pos) * GRID - point).normalized()
 			var grip: Vector2 = point + Vector2(0, -17)
 			draw_line(grip - Vector2(7, 0), grip + toward * 15.0 + Vector2(4, 0), Color("acb99c"), 4, true)
 	if carrying_crate:
-		_prop(12, Rect2(point + Vector2(-13, -31), Vector2(30, 24)))
+		environment_art.draw_prop(self,"ammo_box",Rect2(point+Vector2(-15,-34),Vector2(32,29)))
+	if String(u.get("weapon_state",""))=="reloading" and not bool(u.get("cower",false)):
+		var phase: float=fposmod(visual_time*1.8,1.0)
+		var socket: Vector2=point+Vector2(10,-24 if posture<2 else -4)
+		draw_rect(Rect2(socket+Vector2(phase*3,-phase*4),Vector2(3,8)),Color("6a7557"))
+		if is_selected:_progress_at(point,clampf(float(u.get("reload_progress",0.0))/3.0,0,1),"装入" if int(u.get("reload_stage",0))>0 else "准备装填",Color("e3cd9a"))
 	if carrying_person:
-		draw_texture_rect_region(friendly, Rect2(point + Vector2(-31, -58), Vector2(62, 62)), _character_region(friendly, 9))
+		if pawn_art.ready and not use_legacy_pawns:
+			pawn_art.draw_pawn(self, rescued, point + Vector2(0, -35), 0.0, 2, true, visual_time, Color.WHITE)
+		else:
+			draw_texture_rect_region(friendly, Rect2(point + Vector2(-31, -58), Vector2(62, 62)), _character_region(friendly, 9))
 	if float(u.bleed_rate) > 0.0:
 		draw_circle(point + Vector2(21, -26), 5, Color("ca6255"))
 	if u.dead:
@@ -207,10 +236,12 @@ func _draw_unit(u: Dictionary) -> void:
 		draw_line(point + Vector2(-7, -17), point + Vector2(7, -17), Color("f3d399"), 4)
 		draw_line(point + Vector2(0, -24), point + Vector2(0, -10), Color("f3d399"), 4)
 	if int(u.team) == 0 or is_selected or int(screen.hover_enemy) == int(u.id):
+		var health_y: float = (-74.0 if posture == 0 else -68.0) if component_pawn else -62.0
+		if bool(u.get("cower",false)):health_y=-37
 		if not u.dead:
-			_unit_bar(point + Vector2(0, -62 if posture < 2 else -32), float(u.hp) / float(u.max_hp), Color("88c8ad") if u.conscious else Color("dfb775"))
+			_unit_bar(point + Vector2(0, health_y if posture < 2 else -32), float(u.hp) / float(u.max_hp), Color("88c8ad") if u.conscious else Color("dfb775"))
 		if float(u.suppression) > 1 and not u.dead:
-			_unit_bar(point + Vector2(0, -62 if posture < 2 else -32), float(u.suppression) / 100.0, Color("e6b56b"), true)
+			_unit_bar(point + Vector2(0, health_y if posture < 2 else -32), float(u.suppression) / 100.0, Color("e6b56b"), true)
 	if int(u.team) == 0:
 		_screen_text(point + Vector2(0, maxf(20, 12 / screen.camera.zoom.x)), "%02d" % int(u.id), 40, maxi(13, int(16 * screen.camera.zoom.x)), Color("e6f7de"))
 	if is_selected and int(screen.hover_enemy) >= 0:
@@ -225,7 +256,7 @@ func _draw_unit(u: Dictionary) -> void:
 func _draw_rifle(point: Vector2, facing: float, posture: int, holder_id: int) -> void:
 	var pose: Dictionary = Weapon.rifle(point / GRID, facing, posture)
 	draw_set_transform(Vector2(pose.anchor) * GRID - Vector2.from_angle(facing) * _recoil(holder_id), facing)
-	_prop(10, pose.sprite_rect)
+	environment_art.draw_prop(self,"rifle",pose.sprite_rect)
 	draw_set_transform(Vector2.ZERO)
 
 func _recoil(holder_id: int) -> float:
@@ -311,6 +342,26 @@ func _draw_effects() -> void:
 		var point: Vector2 = fx.pos
 		var alpha: float = 1.0 - progress
 		match String(fx.kind):
+			"unit_state_changed":
+				var state:=String(fx.data.get("state",""))
+				if state in ["suppressed","cowering","routed"]:
+					var center:=point+Vector2(0,-30)
+					draw_arc(center,14+progress*7,PI*1.1,PI*1.9,16,Color(1,.74,.42,alpha*.75),2,true)
+					if state=="cowering":draw_arc(center,9+progress*5,PI*1.05,PI*1.95,16,Color(1,.74,.42,alpha*.7),1.3,true)
+			"reload_stage":
+				var center:=point+Vector2(0,-26)
+				draw_rect(Rect2(center+Vector2(-3,-7-progress*5),Vector2(6,11)),Color(.77,.81,.62,alpha))
+			"unit_action_stage":
+				if String(fx.data.get("job",""))=="treat" and String(fx.data.get("stage",""))=="treatment":
+					var center:=point+Vector2(0,-30-progress*5)
+					draw_rect(Rect2(center-Vector2(6,3),Vector2(12,6)),Color(.88,.92,.79,alpha))
+					draw_rect(Rect2(center-Vector2(2,5),Vector2(4,10)),Color(.60,.76,.57,alpha))
+			"station_changed":
+				draw_arc(point,24+progress*14,0,TAU,32,Color(.68,.91,.77,alpha*.5),2,true)
+			"unit_treated":
+				var center:=point+Vector2(0,-35-progress*10)
+				draw_line(center-Vector2(5,0),center+Vector2(5,0),Color(.60,.88,.64,alpha),3,true)
+				draw_line(center-Vector2(0,5),center+Vector2(0,5),Color(.60,.88,.64,alpha),3,true)
 			"weapon_fired":
 				if progress < 0.5:
 					var facing: float = Vector2(fx.data.get("aim_dir", fx.data.get("dir", Vector2.RIGHT))).angle()
@@ -354,19 +405,40 @@ func _draw_effects() -> void:
 					draw_line(point + direction * progress * 4, point + direction * (6 + progress * 19), Color(0.95, 0.87, 0.61, alpha), 1.5, true)
 
 func _draw_orders() -> void:
+	var preview: Dictionary={}
+	var screen_preview=screen.get("formation_preview")
+	if screen_preview is Dictionary:preview=screen_preview
+	var preview_allocations: Dictionary=preview.get("allocations",{})
 	for id in screen.selected:
-		var u: Dictionary = world.entity(int(id))
-		if u.is_empty(): continue
-		if u.job != "operate": _draw_forced_target(u, unit_position(u) * GRID)
-		var goal: Vector2 = u.get("goal", u.pos)
+		var u: Dictionary=world.entity(int(id))
+		if u.is_empty():continue
+		if u.job!="operate":_draw_forced_target(u,unit_position(u)*GRID)
+		var goal: Vector2=u.get("goal",u.pos)
+		var facing: float=float(u.get("arrival_facing",INF))
 		for order in world.pending_orders:
-			if order.ids.has(id) and order.kind == "move": goal = order.data.position
-		if u.pos.distance_to(goal) > 0.2:
-			draw_dashed_line(unit_position(u) * GRID, goal * GRID, Color(0.75, 0.93, 0.79, 0.6), 1.5, 12)
-			draw_arc(goal * GRID, 9, 0, TAU, 16, Color("c4f1cf"), 2, true)
-	var station: Dictionary = world.entity(int(screen.selected_building))
-	if not station.is_empty() and int(station.get("capacity", 0)) > 0:
-		_draw_forced_target(station, Vector2(station.pos) * GRID)
+			if order.ids.has(id) and order.kind=="move":
+				var allocation: Dictionary=order.data.get("_allocations",{}).get(int(id),{})
+				if allocation.has("goal"):goal=allocation.goal;facing=float(allocation.get("facing",INF))
+		var showing_preview: bool=preview_allocations.has(int(id))
+		if showing_preview:
+			var allocation: Dictionary=preview_allocations[int(id)]
+			goal=allocation.goal;facing=float(allocation.get("facing",INF))
+		if u.pos.distance_to(goal)>.2 or showing_preview:
+			var color:=Color("c4f1cf") if bool(preview.get("ok",true)) else Color("ed8b76")
+			draw_dashed_line(unit_position(u)*GRID,goal*GRID,Color(color,.55),1.5,12)
+			draw_rect(Rect2(goal*GRID-Vector2(25,25),Vector2(50,50)),Color(color,.09))
+			draw_arc(goal*GRID,10,0,TAU,16,color,2,true)
+			if is_finite(facing):
+				var direction:=Vector2.from_angle(facing)
+				draw_line(goal*GRID,goal*GRID+direction*30,color,2,true)
+				draw_colored_polygon(PackedVector2Array([goal*GRID+direction*34,goal*GRID+direction*25+direction.orthogonal()*4,goal*GRID+direction*25-direction.orthogonal()*4]),color)
+	if preview.has("drag_start") and preview.has("drag_end"):
+		var color:=Color("c4f1cf") if bool(preview.get("ok",false)) else Color("ed8b76")
+		draw_dashed_line(Vector2(preview.drag_start)*GRID,Vector2(preview.drag_end)*GRID,Color(color,.72),2,9)
+	if not preview.is_empty() and not bool(preview.get("ok",true)):
+		_screen_text(screen.mouse_world()*GRID+Vector2(0,40),String(preview.get("reason","队形空间不足")),240,14,Color("efaa92"))
+	var station: Dictionary=world.entity(int(screen.selected_building))
+	if not station.is_empty() and int(station.get("capacity",0))>0:_draw_forced_target(station,Vector2(station.pos)*GRID)
 
 func _draw_forced_target(holder: Dictionary, origin: Vector2) -> void:
 	var target: Dictionary = world.entity(int(holder.get("target_id", -1)))
@@ -469,3 +541,4 @@ func draw_ellipse_shadow(center: Vector2, radii: Vector2, color: Color) -> void:
 	for i in range(24):
 		points.append(center + Vector2(cos(float(i) / 24 * TAU) * radii.x, sin(float(i) / 24 * TAU) * radii.y))
 	draw_colored_polygon(points, color)
+

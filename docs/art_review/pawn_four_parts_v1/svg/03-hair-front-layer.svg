@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="832" viewBox="0 0 64 104"><defs>
+<linearGradient id="coat" x1="0" y1="0" x2=".9" y2="1"><stop stop-color="#96a699"/><stop offset=".54" stop-color="#7f9387"/><stop offset="1" stop-color="#5f766d"/></linearGradient>
+<linearGradient id="shirt" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#f0e8d5"/><stop offset="1" stop-color="#d1c8b2"/></linearGradient>
+<linearGradient id="trousers" x1="0" y1="0" x2="1" y2=".2"><stop stop-color="#505d64"/><stop offset="1" stop-color="#3c444d"/></linearGradient>
+</defs><g id="hair-front" fill="#735b50" stroke="#302f32" stroke-width=".62" stroke-linejoin="round" stroke-linecap="round"><path d="M20 21L20.8 14Q23.8 8.6 32 9Q41.2 8.7 44 16.5L43 25L40.8 20.4L38.5 22L36 20.1L33 22.2L30.1 20.4L27.3 22.1L24.4 20.8L22.6 26.2Z"/><path d="M24 13.7Q32.1 10.8 40.4 14M20.9 30Q17.8 34 21 37Q24 40 20.6 44Q17.7 48 21.2 52Q23.3 55 21 57.5M43.1 30Q46.2 34 43 37Q40 40 43.4 44Q46.3 48 42.8 52Q40.7 55 43 57.5" fill="none" stroke="#ab8a74" stroke-width=".42" opacity=".8"/></g></svg>

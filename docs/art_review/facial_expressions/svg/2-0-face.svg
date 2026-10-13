@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 64 64"><g id="face-overlay" transform="translate(0 0)"><g transform=""><g transform="translate(0 26) scale(1 1) translate(0 -26)">
+    <defs><clipPath id="eye-0-2-0"><path d="M22.3 25.2Q25.8 23.5 30.1 25.299999999999997L29.3 28.8Q26.6 30 23.6 28.7Z"/></clipPath>
+    <linearGradient id="iris-eye-0-2-0" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#302843"/><stop offset=".55" stop-color="#73529c"/><stop offset="1" stop-color="#c4a8ee"/></linearGradient></defs>
+    <path d="M22.1 23.9Q25.9 22.799999999999997 30.3 24.7L30.1 26.4Q25.8 24.799999999999997 22.3 26.099999999999998Z" fill="#6d6e63" opacity=".55"/>
+    <path d="M22.3 25.2Q25.8 23.5 30.1 25.299999999999997L29.3 28.8Q26.6 30 23.6 28.7Z" fill="#f7f5e9" stroke="#141c20" stroke-width=".65"/>
+    <g clip-path="url(#eye-0-2-0)"><ellipse cx="26.5" cy="26.3" rx="2.55" ry="3.2" fill="url(#iris-eye-0-2-0)" stroke="#141c20" stroke-width=".65"/>
+    <ellipse cx="26.5" cy="25.5" rx="1.05" ry="1.85" fill="#141c20" opacity=".83"/>
+    <ellipse cx="27.65" cy="28.1" rx=".62" ry=".42" fill="#c4a8ee"/>
+    <ellipse cx="25.4" cy="25.4" rx=".5" ry=".7" fill="#fffaf0" opacity=".9"/></g>
+    <path d="M21.8 25.0Q25.5 22.7 30.4 25.2L29.8 26.299999999999997Q25.7 24.4 22.8 26.25Z" fill="#141c20"/>
+    <path d="M23.8 28.9Q26.2 29.8 28.7 29" fill="none" stroke="#141c20" stroke-width=".45"/>
+    </g></g><g transform="translate(64 0) scale(-1 1)"><g transform="translate(0 26) scale(1 1) translate(0 -26)">
+    <defs><clipPath id="eye-1-2-0"><path d="M22.3 25.2Q25.8 23.5 30.1 25.299999999999997L29.3 28.8Q26.6 30 23.6 28.7Z"/></clipPath>
+    <linearGradient id="iris-eye-1-2-0" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#302843"/><stop offset=".55" stop-color="#73529c"/><stop offset="1" stop-color="#c4a8ee"/></linearGradient></defs>
+    <path d="M22.1 23.9Q25.9 22.799999999999997 30.3 24.7L30.1 26.4Q25.8 24.799999999999997 22.3 26.099999999999998Z" fill="#6d6e63" opacity=".55"/>
+    <path d="M22.3 25.2Q25.8 23.5 30.1 25.299999999999997L29.3 28.8Q26.6 30 23.6 28.7Z" fill="#f7f5e9" stroke="#141c20" stroke-width=".65"/>
+    <g clip-path="url(#eye-1-2-0)"><ellipse cx="26.5" cy="26.3" rx="2.55" ry="3.2" fill="url(#iris-eye-1-2-0)" stroke="#141c20" stroke-width=".65"/>
+    <ellipse cx="26.5" cy="25.5" rx="1.05" ry="1.85" fill="#141c20" opacity=".83"/>
+    <ellipse cx="27.65" cy="28.1" rx=".62" ry=".42" fill="#c4a8ee"/>
+    <ellipse cx="25.4" cy="25.4" rx=".5" ry=".7" fill="#fffaf0" opacity=".9"/></g>
+    <path d="M21.8 25.0Q25.5 22.7 30.4 25.2L29.8 26.299999999999997Q25.7 24.4 22.8 26.25Z" fill="#141c20"/>
+    <path d="M23.8 28.9Q26.2 29.8 28.7 29" fill="none" stroke="#141c20" stroke-width=".45"/>
+    </g></g><path d="M22.1 21.5Q26.3 22.3 30 23.7L29.7 24.3Q25.3 23.5 22.1 22.2ZM41.9 21.5Q37.7 22.3 34 23.7L34.3 24.3Q38.7 23.5 41.9 22.2Z" fill="#141c20"/><path d="M31.6 29.5Q32 29.2 32.4 29.5L32 30.3Z" fill="#665f54" opacity=".75"/><path d="M31.1 32.1H32.9" fill="none" stroke="#66564e" stroke-width=".5"/></g></svg>

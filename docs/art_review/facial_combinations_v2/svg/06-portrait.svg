@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="13 3 38 38"><g id="hair-back" fill="#a4aba5" stroke="#263b3b" stroke-width=".78" stroke-linejoin="round" stroke-linecap="round"><path d="M42.8 22.5C47.8 20.8 49.9 25.4 47.5 29.1C46 31.8 48.4 33.9 47.1 37C44.1 36.1 42.9 34.2 43.4 31.9C44.9 29.8 43.1 27.7 41.9 26.3Z M19.5 24L19 16.4Q18.7 7.3 31 7.5Q43 6.5 44.8 15.5L44.7 24.4L41.6 21H22.6Z"/><path d="M43.2 24.1L45.3 24.7" fill="none" stroke="#668d88" stroke-width="1.1"/></g><g id="head" fill="#e5cbb6" stroke="#263b3b" stroke-linejoin="round"><ellipse cx="20.8" cy="24.8" rx="1.45" ry="2.05" stroke-width=".65"/><ellipse cx="43.2" cy="24.8" rx="1.45" ry="2.05" stroke-width=".65"/><path d="M32 10C26 10 22.2 13.6 21.5 19Q20.7 23.4 22 27.5C23.8 32.5 28.2 35.1 31.3 35.5Q32 35.7 32.7 35.5C35.8 35.1 40.2 32.5 42 27.5Q43.3 23.4 42.5 19C41.8 13.6 38 10 32 10Z" stroke-width="1.1"/></g><g xmlns="http://www.w3.org/2000/svg" id="features"><g transform="translate(26.2 26.4) scale(0.87 0.87) translate(-26.2 -26.4)"><g transform="">
+    <defs><clipPath id="eye-0"><path d="M22.3 24.5Q25.6 23.3 30.1 24.8L29.4 28.8Q26.5 29.8 23.5 28.7Z" /></clipPath>
+    <linearGradient id="iris-eye-0" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#363044" /><stop offset=".62" stop-color="#796a9b" /><stop offset="1" stop-color="#c6b6df" /></linearGradient></defs>
+    <path d="M22.2 23.45Q25.7 22.3 30.2 23.900000000000002L30 25.2Q25.7 23.3 22.3 24.9Z" fill="#6c6b60" opacity=".18" />
+    <path d="M22.3 24.5Q25.6 23.3 30.1 24.8L29.4 28.8Q26.5 29.8 23.5 28.7Z" fill="#f7f5e9" stroke="#171f24" stroke-width="0.44" />
+    <g clip-path="url(#eye-0)"><g transform="translate(0 0)">
+    <path d="M24.1 23.4Q26.5 22.8 28.9 23.4L28.7 28.6Q26.6 29.8 24.3 28.6Z" fill="url(#iris-eye-0)" stroke="#171f24" stroke-width="0.52" />
+    <rect x="26" y="23.7" width=".9" height="3.6" rx=".4" fill="#171f24" opacity=".75" />
+    <ellipse cx="24.9" cy="25.5" rx=".43" ry=".62" fill="#fffbed" opacity=".9" />
+    </g></g>
+    <path d="M21.9 24.4Q25.6 22.3 30.5 24.7L29.9 25.85Q25.6 23.8 22.7 25.65Z" fill="#171f24" />
+    </g></g><g transform="translate(37.8 26.4) scale(0.87 0.87) translate(-37.8 -26.4)"><g transform="translate(64 0) scale(-1 1)">
+    <defs><clipPath id="eye-1"><path d="M22.3 24.5Q25.6 23.3 30.1 24.8L29.4 28.8Q26.5 29.8 23.5 28.7Z" /></clipPath>
+    <linearGradient id="iris-eye-1" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#363044" /><stop offset=".62" stop-color="#796a9b" /><stop offset="1" stop-color="#c6b6df" /></linearGradient></defs>
+    <path d="M22.2 23.45Q25.7 22.3 30.2 23.900000000000002L30 25.2Q25.7 23.3 22.3 24.9Z" fill="#6c6b60" opacity=".18" />
+    <path d="M22.3 24.5Q25.6 23.3 30.1 24.8L29.4 28.8Q26.5 29.8 23.5 28.7Z" fill="#f7f5e9" stroke="#171f24" stroke-width="0.44" />
+    <g clip-path="url(#eye-1)"><g transform="translate(0 0)">
+    <path d="M24.1 23.4Q26.5 22.8 28.9 23.4L28.7 28.6Q26.6 29.8 24.3 28.6Z" fill="url(#iris-eye-1)" stroke="#171f24" stroke-width="0.52" />
+    <rect x="26" y="23.7" width=".9" height="3.6" rx=".4" fill="#171f24" opacity=".75" />
+    <ellipse cx="24.9" cy="25.5" rx=".43" ry=".62" fill="#fffbed" opacity=".9" />
+    </g></g>
+    <path d="M21.9 24.4Q25.6 22.3 30.5 24.7L29.9 25.85Q25.6 23.8 22.7 25.65Z" fill="#171f24" />
+    </g></g><path d="M24 22.5L28.9 23.1M35.1 23.1L40 22.5" fill="none" stroke="#20272b" stroke-width="0.52" stroke-linecap="round" /><path d="M31.8 29.7L32.3 30.3" fill="none" stroke="#766354" stroke-width="0.304" stroke-linecap="round" /><path d="M31 32.1L33 32.2" fill="none" stroke="#72584e" stroke-width="0.376" stroke-linecap="round" /></g><g id="hair-front" fill="#a4aba5" stroke="#263b3b" stroke-width=".78" stroke-linejoin="round" stroke-linecap="round"><path d="M20.4 20.7L20.7 14Q25 8.2 34.8 9Q41.3 9.8 43.8 16.7L42.5 24L39.4 20.6L39.1 13.3Q34.8 20.8 24.4 20L22.2 23Z"/><path d="M24.1 13.8Q28 11.3 34 11.5M44.1 25.1Q47.2 26.5 45.2 29.3M45 32Q45.8 34.2 46.6 35.1" fill="none" stroke="#d0d4c8" stroke-width=".48"/></g></svg>

@@ -13,7 +13,7 @@ var _placement_scope := false
 var _placement_blockers: Dictionary = {}
 const INVALID_CELL := Vector2i(-1, -1)
 const INTERACTION_DISTANCE := 1.01
-const SETTINGS := ["posture", "style"]
+const SETTINGS := ["posture", "style", "fire_control", "target_policy"]
 const ACTIONS := ["move", "attack", "stop", "draft", "operate", "resupply", "fire", "rescue", "treat"]
 
 func setup(world) -> void:
@@ -39,6 +39,9 @@ func _init_unit(u: Dictionary) -> void:
 		u["traffic_wait_start"] = -1.0
 		u["action_job"] = ""; u["action_stage"] = ""; u["wake_pending"] = false
 	if not u.has("station_seat"): u["station_seat"] = -1
+	var defaults := {"pressure_level": 0, "cower": false, "pressure_entered": -999.0, "pressure_release_timer": 0.0, "pressure_event_time": -999.0, "pressure_event_serial": 0, "pressure_ready_since": -1.0, "pressure_checked_at": -1.0, "pressure_release_since": -1.0, "auto_posture_next": 0.0, "hold_fire": false, "target_policy": "strict", "reload_stage": 0, "reload_paused": false, "idle_reload_since": -1.0, "arrival_facing": INF, "action_pause_reason": ""}
+	for key in defaults:
+		if not u.has(key): u[key] = defaults[key]
 
 func rebuild_navigation(world) -> void:
 	navigation.region = Rect2i(Vector2i.ZERO, C.MAP_SIZE)
@@ -219,14 +222,24 @@ func validate_order(world, ids: Array, kind: String, data: Dictionary) -> Dictio
 	selected.sort()
 	if kind == "posture" and not int(data.get("value", -2)) in [-1, 0, 1, 2]: return _bad("姿态无效")
 	if kind == "style" and not int(data.get("value", -1)) in [0, 1, 2]: return _bad("作战风格无效")
+	if kind == "fire_control" and not data.get("value") is bool: return _bad("火控设置无效")
+	if kind == "target_policy" and not String(data.get("value", "")) in ["strict", "priority"]: return _bad("锁定模式无效")
 	if kind in SETTINGS or kind in ["stop", "draft"]: return {"ok": true, "reason": ""}
 	if kind == "move":
 		if not data.get("position") is Vector2: return _bad("缺少移动位置")
-		var goals: Array[Vector2] = _group_goals(world, selected, data.position, projection)
-		if goals.size() != selected.size(): return _bad("落点无法通行或没有足够空间")
-		for i in range(selected.size()):
-			if not _reachable(world.entity(selected[i]).pos, goals[i]): return _bad("没有可达路径")
-			allocations[selected[i]] = {"goal": goals[i]}
+		for id in selected: _project_release(projection, id)
+		if data.has("formation"):
+			var formation: Dictionary = data.formation
+			if not formation.get("axis") is Vector2: return _bad("队列方向无效")
+			var planned := _plan_formation(world, selected, data.position, formation.axis, float(formation.get("spacing", 1.0)), float(formation.get("facing", 0.0)), projection)
+			if not planned.ok: return planned
+			allocations = planned.allocations
+		else:
+			var goals: Array[Vector2] = _group_goals(world, selected, data.position, projection)
+			if goals.size() != selected.size(): return _bad("落点无法通行或没有足够空间")
+			for i in range(selected.size()):
+				if not _reachable(world.entity(selected[i]).pos, goals[i]): return _bad("没有可达路径")
+				allocations[selected[i]] = {"goal": goals[i]}
 	elif kind == "attack":
 		var target: Dictionary = world.entity(int(data.get("target_id", -1)))
 		if target.is_empty() or bool(target.get("dead", false)) or bool(target.get("destroyed", false)) or float(target.get("hp", 0.0)) <= 0.0: return _bad("攻击目标无效")
@@ -325,6 +338,103 @@ func _group_goals(world, ids: Array[int], clicked: Vector2, projection: Dictiona
 		if result.size() >= ids.size(): break
 	return result
 
+func _flow_edge(graph: Array, from: int, to: int, capacity: int, cost: float) -> void:
+	var forward := {"to": to, "reverse": graph[to].size(), "capacity": capacity, "cost": cost}
+	var reverse := {"to": from, "reverse": graph[from].size(), "capacity": 0, "cost": -cost}
+	graph[from].append(forward); graph[to].append(reverse)
+
+# Unit -> unique cell -> ideal slot. Residual edges allow later assignments to
+# move earlier units, so a greedy choice cannot reject a feasible whole group.
+func _formation_flow(world, ids: Array[int], candidates: Array[Vector2], ideals: Array[Vector2]) -> Array[int]:
+	var n := ids.size(); var m := candidates.size()
+	var source := 0; var unit_start := 1; var cell_in := n + 1; var cell_out := n + m + 1; var slot_start := n + 2 * m + 1; var sink := 2 * n + 2 * m + 1
+	var graph: Array = []
+	for vertex in range(sink + 1): graph.append([])
+	for unit in range(n):
+		_flow_edge(graph, source, unit_start + unit, 1, 0.0)
+		for candidate in range(m):
+			var cost := _formation_path_cost(world.entity(ids[unit]).pos, candidates[candidate])
+			if cost < 1.0e12: _flow_edge(graph, unit_start + unit, cell_in + candidate, 1, cost)
+	for candidate in range(m):
+		_flow_edge(graph, cell_in + candidate, cell_out + candidate, 1, 0.0)
+		for slot in range(n):
+			var offset := candidates[candidate] - ideals[slot]
+			if maxf(absf(offset.x), absf(offset.y)) <= 2.000001:
+				_flow_edge(graph, cell_out + candidate, slot_start + slot, 1, offset.length_squared() * 1000000.0)
+	for slot in range(n): _flow_edge(graph, slot_start + slot, sink, 1, 0.0)
+	for flow in range(n):
+		var distance: Array[float] = []; distance.resize(graph.size()); distance.fill(INF); distance[source] = 0.0
+		var parent_vertex: Array[int] = []; parent_vertex.resize(graph.size()); parent_vertex.fill(-1)
+		var parent_edge: Array[int] = []; parent_edge.resize(graph.size()); parent_edge.fill(-1)
+		var queued: Array[bool] = []; queued.resize(graph.size()); queued.fill(false)
+		var queue: Array[int] = [source]; queued[source] = true; var head := 0
+		while head < queue.size():
+			var vertex: int = queue[head]; head += 1; queued[vertex] = false
+			for edge_index in range(graph[vertex].size()):
+				var edge: Dictionary = graph[vertex][edge_index]
+				if int(edge.capacity) <= 0: continue
+				var value: float = distance[vertex] + float(edge.cost)
+				var target := int(edge.to)
+				if value >= distance[target] - 0.00000001: continue
+				distance[target] = value; parent_vertex[target] = vertex; parent_edge[target] = edge_index
+				if not queued[target]: queue.append(target); queued[target] = true
+		if parent_vertex[sink] < 0: return []
+		var vertex := sink
+		while vertex != source:
+			var previous := parent_vertex[vertex]; var edge: Dictionary = graph[previous][parent_edge[vertex]]
+			edge.capacity = int(edge.capacity) - 1
+			graph[vertex][int(edge.reverse)].capacity = int(graph[vertex][int(edge.reverse)].capacity) + 1
+			vertex = previous
+	var result: Array[int] = []; result.resize(n); result.fill(-1)
+	for unit in range(n):
+		for edge in graph[unit_start + unit]:
+			if int(edge.to) >= cell_in and int(edge.to) < cell_in + m and int(edge.capacity) == 0:
+				result[unit] = int(edge.to) - cell_in; break
+	return result
+
+func plan_formation(world, ids: Array, center: Vector2, axis: Vector2, spacing: float, facing: float) -> Dictionary:
+	return _plan_formation(world, ids, center, axis, spacing, facing, _projection(world))
+
+func _plan_formation(world, ids: Array, center: Vector2, axis: Vector2, spacing: float, facing: float, projection: Dictionary) -> Dictionary:
+	if ids.is_empty(): return {"ok": false, "reason": "请先选择人员", "allocations": {}}
+	if not center.is_finite() or not axis.is_finite() or axis.length_squared() < 0.000001 or not is_finite(spacing) or not is_finite(facing): return {"ok": false, "reason": "队形参数无效", "allocations": {}}
+	var selected: Array[int] = []
+	for raw_id in ids:
+		var id := int(raw_id); var u: Dictionary = world.entity(id)
+		if u.is_empty() or not _active(u) or int(u.team) != 0: return {"ok": false, "reason": "队形中有无法行动的人员", "allocations": {}}
+		if not selected.has(id): selected.append(id)
+	selected.sort()
+	var projected := projection.duplicate(true)
+	for id in selected: _project_release(projected, id)
+	var ideals: Array[Vector2] = []
+	var candidates: Array[Vector2] = []
+	axis = axis.normalized(); spacing = clampf(spacing, 1.0, 4.0)
+	for index in range(selected.size()):
+		var ideal := _center(center + axis * (float(index) - float(selected.size() - 1) * 0.5) * spacing)
+		ideals.append(ideal)
+		for y in range(-2, 3):
+			for x in range(-2, 3):
+				var point := ideal + Vector2(x, y)
+				if candidates.has(point) or not _destination_free(world, point, selected, projected): continue
+				# A formation cell must be reachable by at least one selected member.
+				for id in selected:
+					if _reachable(world.entity(id).pos, point): candidates.append(point); break
+	candidates.sort_custom(func(a, b): return a.y < b.y if a.y != b.y else a.x < b.x)
+	if candidates.size() < selected.size(): return {"ok": false, "reason": "队形空间不足", "allocations": {}}
+	var matched := _formation_flow(world, selected, candidates, ideals)
+	if matched.size() != selected.size(): return {"ok": false, "reason": "队形没有整组可达空间", "allocations": {}}
+	var allocations := {}
+	for index in range(selected.size()): allocations[selected[index]] = {"goal": candidates[matched[index]], "facing": facing}
+	return {"ok": true, "reason": "", "allocations": allocations}
+
+func _formation_path_cost(from: Vector2, to: Vector2) -> float:
+	var path := navigation.get_point_path(_cell(from), _cell(to))
+	if path.is_empty(): return 1.0e12
+	var length := 0.0; var previous: Vector2 = from
+	for point in path:
+		length += previous.distance_to(point) * navigation.get_point_weight_scale(_cell(point)); previous = point
+	return length
+
 func apply_order(world, ids: Array, kind: String, data: Dictionary) -> void:
 	var sorted_ids := ids.duplicate(); sorted_ids.sort()
 	for raw_id in sorted_ids:
@@ -334,9 +444,11 @@ func apply_order(world, ids: Array, kind: String, data: Dictionary) -> void:
 		var alloc: Dictionary = data.get("_allocations", {}).get(int(u.id), {})
 		if kind == "posture":
 			u.posture_mode = int(data.value)
-			if u.posture_mode >= 0 and not u.forced_prone: _change_posture(u, int(u.posture_mode))
+			if u.posture_mode >= 0 and not bool(u.cower): _change_posture(u, maxi(int(u.posture_mode), mini(2, int(u.pressure_level))))
 			continue
 		if kind == "style": u.style = int(data.value); continue
+		if kind == "fire_control": u.hold_fire = bool(data.value); continue
+		if kind == "target_policy": u.target_policy = String(data.value); continue
 		if kind == "fire":
 			var b: Dictionary = world.entity(int(data.target_id))
 			if not b.is_empty() and int(u.station_id) == int(b.id):
@@ -354,15 +466,19 @@ func apply_order(world, ids: Array, kind: String, data: Dictionary) -> void:
 				u.drafted = true
 				if u.job in ["rout", "flee"]: _cancel_job(world, u)
 			continue
-		var keep_reload: bool = kind in ["move", "attack"] and not String(u.job) in ["operate", "resupply", "rescue", "treat", "rout"] and u.drafted
-		var saved_reload: float = float(u.reload_progress)
-		var saved_reservation: int = int(u.reload_reserved)
-		_cancel_job(world, u)
-		if keep_reload: u.reload_progress = saved_reload; u.reload_reserved = saved_reservation
+		# Work commands suspend personal chambering; the completed stage belongs
+		# to this weapon and must survive task hand-offs and completion.
+		if kind in ["move", "operate", "resupply", "rescue", "treat"]:
+			world.combat_system._interrupt_reload(u, float(C.rifle().reload))
+		if kind == "stop" and int(u.station_id) >= 0:
+			var station: Dictionary = world.entity(int(u.station_id))
+			if not station.is_empty():
+				station.reload_progress = 0.0; station.reload_reserved = 0; station["reload_stage"] = 0; station.fire_requested = false; station.target_id = -1
+		_cancel_job(world, u, kind not in ["stop", "draft"])
 		match kind:
 			"draft": u.drafted = false; u.status = "未征召"
 			"move":
-				u.job = "move"; u.status = "移动"
+				u.job = "move"; u.status = "移动"; u.arrival_facing = float(alloc.get("facing", INF))
 				_start_path(world, u, alloc.get("goal", data.position))
 			"attack": u.target_id = int(data.target_id); u.status = "指定攻击"
 			"operate":
@@ -389,11 +505,13 @@ func apply_order(world, ids: Array, kind: String, data: Dictionary) -> void:
 			"stop": u.status = "待命"
 		_publish_action_stage(world, u)
 
-func _cancel_job(world, u: Dictionary) -> void:
+func _cancel_job(world, u: Dictionary, preserve_reload: bool = true) -> void:
 	release_station(world, u); _release_supply(world, u); _drop_patient(world, u); _release_medical(world, u)
 	u.job = "idle"; u.stage = ""; u.path = PackedVector2Array(); u.path_index = 0; u.goal = Vector2(u.move_to) + Vector2(0.5, 0.5) if bool(u.move_active) else _center(u.pos)
 	u.target_id = -1; u.rescued_id = -1; u.job_timer = 0.0; u.velocity = Vector2.ZERO
-	u.reload_progress = 0.0; u.reload_reserved = 0; u.burst_left = 0; u.treatment_reserved = false; u.treatment_source = ""
+	if not preserve_reload:
+		u.reload_progress = 0.0; u.reload_reserved = 0; u.reload_stage = 0; u.reload_paused = false; u.idle_reload_since = -1.0
+	u.burst_left = 0; u.treatment_reserved = false; u.treatment_source = ""; u.arrival_facing = INF
 	u.melee_target_id = -1; u.melee_progress = 0.0
 	u.traffic_yield = false; u.traffic_resume = Vector2.INF; u.traffic_for = -1
 	u.traffic_wait_start = -1.0
@@ -407,9 +525,11 @@ func release_station(world, u: Dictionary) -> void:
 	if not b.is_empty():
 		var was_gunner: bool = not b.crew.is_empty() and int(b.crew[0]) == int(u.id)
 		b.crew.erase(int(u.id))
-		if b.kind == "mg": b.reload_progress = 0.0; b.reload_reserved = 0; b.burst_left = 0
+		if b.kind == "mg": b.burst_left = 0
 		if was_gunner: b.aim_progress = 0.0
-		if b.crew.is_empty(): b.reload_progress = 0.0; b.reload_reserved = 0; b.aim_progress = 0.0; b.fire_requested = false; b.target_id = -1
+		if b.crew.is_empty():
+			world.combat_system._interrupt_reload(b, 10.0 if b.kind == "mortar" else float(C.machine_gun().reload))
+			b.aim_progress = 0.0
 		world.emit_event("station_changed", {"entity_id": b.id, "unit_id": u.id})
 		if was_gunner and not b.crew.is_empty(): _reposition_station_crew(world, b)
 	u.station_id = -1; u.station_seat = -1; u.arrival_order = 2147483647
@@ -590,7 +710,7 @@ func _release_occupancy(u: Dictionary) -> void:
 	u.move_active = false; u.move_from = INVALID_CELL; u.move_to = INVALID_CELL
 
 func _can_yield(u: Dictionary) -> bool:
-	if not _active(u) or u.forced_prone or bool(u.move_active) or bool(u.traffic_yield): return false
+	if not _active(u) or bool(u.get("cower", false)) or float(u.posture_timer) > 0.0 or bool(u.move_active) or bool(u.traffic_yield): return false
 	if u.team == 0 and int(u.target_id) >= 0: return false
 	if u.job == "operate" and u.stage == "station": return false
 	return not String(u.stage) in ["pickup_patient", "drop_patient", "treatment"]
@@ -654,7 +774,7 @@ func _handle_traffic_block(world, u: Dictionary, next: Vector2, dt: float) -> vo
 	if float(u.blocked_time) >= 2.0 and not blocker.is_empty() and blocker.path.is_empty() and not bool(blocker.move_active):
 		if u.team == 1: u.ai_hold_until = 0.0; u.ai_next = 0.0; u.path = PackedVector2Array()
 		else: _reject(world, u, "路径被人员阻挡，请调整落点")
-	elif float(u.blocked_time) >= 4.0 and not blocker.is_empty() and not blocker.forced_prone and not bool(blocker.move_active) and not bool(blocker.traffic_yield):
+	elif float(u.blocked_time) >= 4.0 and not blocker.is_empty() and not bool(blocker.get("cower", false)) and float(blocker.posture_timer) <= 0.0 and not bool(blocker.move_active) and not bool(blocker.traffic_yield):
 		if u.team == 1: u.ai_hold_until = 0.0; u.ai_next = 0.0; u.path = PackedVector2Array(); u.status = "狭道无可让路位置"
 		else: _reject(world, u, "狭道无可让路位置，请调整命令")
 
@@ -681,16 +801,16 @@ func _reject(world, u: Dictionary, reason: String) -> void:
 
 func _finish_job(world, u: Dictionary, text: String = "待命") -> void:
 	var old_job: String = u.job
-	var reload_progress: float = float(u.reload_progress)
-	var reload_reserved: int = int(u.reload_reserved)
+	var arrival_facing: float = float(u.get("arrival_facing", INF))
 	_cancel_job(world, u); u.status = text
-	if old_job == "move": u.reload_progress = reload_progress; u.reload_reserved = reload_reserved
+	if old_job == "move" and is_finite(arrival_facing): u.facing = arrival_facing
 	world.emit_event("order_completed", {"unit_id": u.id, "job": old_job})
 
 func _change_posture(u: Dictionary, value: int) -> void:
 	if int(u.posture) == value: return
 	u.posture_timer = absf(float(u.posture) - value) * 0.35
 	u.posture = value; u.stability = 0.0
+	u["aim_progress"] = 0.0; u["aim_elapsed"] = 0.0; u["aim_fraction"] = 0.0; u.burst_left = 0
 
 func _ensure_unit(u: Dictionary) -> void:
 	_init_unit(u)
@@ -726,21 +846,25 @@ func update(world, dt: float) -> void:
 		if u.dead or not u.conscious or int(u.carrier_id) >= 0: continue
 		if u.job == "rout":
 			if world.time_s >= float(u.rout_until) and (u.team == 0 or float(u.suppression) < 40.0):
-				u.job = "idle"; u.path = PackedVector2Array(); u.status = "未征召" if u.team == 0 else "重新推进"
+				u.job = "idle"; u.path = PackedVector2Array(); u.pressure_level = 0; u.cower = false; u.pressure_checked_at = world.time_s; u.status = "未征召" if u.team == 0 else "重新推进"
 				u.ai_next = 0.0
 		elif u.team == 1 and not bool(u.traffic_yield) and world.time_s >= float(u.ai_next):
 			u.ai_next = world.time_s + 0.25; _enemy_ai(world, u)
 		elif u.team == 0 and not u.drafted and not bool(u.traffic_yield) and world.time_s >= float(u.ai_next):
 			u.ai_next = world.time_s + 0.25; _standby_ai(world, u)
-		if not u.forced_prone:
-			_move(world, u, dt)
-			if float(u.posture_timer) <= 0.0 and not bool(u.move_active) and not bool(u.traffic_yield): _work(world, u, dt)
 		_auto_posture(world, u)
+		if can_act(world, u, "move").ok: _move(world, u, dt)
+		if not bool(u.move_active) and not bool(u.traffic_yield):
+			var action := "operate" if u.job == "operate" and u.stage == "station" else ("treat" if u.job == "treat" else "rescue" if u.job == "rescue" else "move")
+			var allowed := can_act(world, u, action)
+			u.action_pause_reason = String(allowed.reason)
+			if allowed.ok: _work(world, u, dt)
+			elif not u.path.is_empty() or u.job != "idle": u.status = String(allowed.reason)
 		var q: float = float(u.suppression) / 100.0
 		var cap: float = (1.0 - 0.5 * q) * (0.2 if u.velocity.length_squared() > 0.0001 else 1.0)
 		var rate: float = 0.5 * float(C.STYLE_RECOVERY[int(u.style)]) * (1.0 - 0.65 * q)
 		u.stability = minf(cap, float(u.stability) + rate * dt)
-		if u.forced_prone or float(u.posture_timer) > 0.0: u.stability = 0.0
+		if bool(u.cower) or float(u.posture_timer) > 0.0: u.stability = 0.0
 	for s in world.supplies:
 		if int(s.carried_by) >= 0:
 			var carrier: Dictionary = world.entity(int(s.carried_by))
@@ -758,7 +882,7 @@ func finalize(world) -> void:
 		if not u.dead and u.conscious: _update_pressure(world, u)
 		# Combat reports empty rifles after its update. Empty enemy rifles instead
 		# continue a visible structural assault; pressure and rout keep precedence.
-		if u.team == 1 and not u.dead and u.conscious and not u.forced_prone and u.job != "rout" and int(u.loaded) <= 0 and int(u.reserve) <= 0 and int(u.melee_target_id) >= 0:
+		if u.team == 1 and not u.dead and u.conscious and not bool(u.cower) and u.job != "rout" and int(u.loaded) <= 0 and int(u.reserve) <= 0 and int(u.melee_target_id) >= 0:
 			var assault: Dictionary = world.entity(int(u.melee_target_id))
 			if not assault.is_empty() and not assault.destroyed and assault.hp > 0:
 				u.status = "近战攻击" + str(assault.name) if _structure_distance(u.pos, assault) <= 0.85 else "空弹接近"
@@ -771,7 +895,7 @@ func _update_life(world, u: Dictionary) -> void:
 	if u.dead: return
 	if float(u.hp) <= 0.0:
 		u.hp = 0.0; u.dead = true; u.conscious = false
-		_cancel_job(world, u); u.status = "阵亡"; u.posture = 2
+		_cancel_job(world, u, false); u.status = "阵亡"; u.posture = 2
 		_release_occupancy(u)
 		if int(u.carrier_id) >= 0:
 			var carrier: Dictionary = world.entity(int(u.carrier_id))
@@ -779,7 +903,7 @@ func _update_life(world, u: Dictionary) -> void:
 			u.carrier_id = -1
 		world.emit_event("unit_state_changed", {"unit_id": u.id, "state": "dead", "pos": u.pos})
 	elif u.conscious and float(u.hp) < float(u.max_hp) * 0.25:
-		u.conscious = false; _cancel_job(world, u); u.posture = 2; u.status = "昏迷"; u.stability = 0.0
+		u.conscious = false; world.combat_system._interrupt_reload(u, float(C.rifle().reload)); _cancel_job(world, u); u.posture = 2; u.status = "昏迷"; u.stability = 0.0
 		_release_occupancy(u)
 		world.emit_event("unit_state_changed", {"unit_id": u.id, "state": "unconscious", "pos": u.pos})
 	elif not u.conscious and float(u.hp) > float(u.max_hp) * 0.35:
@@ -793,50 +917,104 @@ func _update_life(world, u: Dictionary) -> void:
 		if int(u.carrier_id) < 0: occupied_cells[_cell(u.pos)] = int(u.id); reserved_cells[_cell(u.pos)] = int(u.id)
 		world.emit_event("unit_state_changed", {"unit_id": u.id, "state": "awake", "pos": u.pos})
 
+# One pressure update may be observed in update and finalize; release time is
+# measured from the world clock so it is never counted twice in one step.
 func _update_pressure(world, u: Dictionary) -> void:
 	u.suppression = clampf(float(u.suppression), 0.0, 100.0)
-	if float(u.suppression) < 60.0: u.rout_latched = false
-	if float(u.suppression) >= 100.0 and not u.rout_latched:
-		u.rout_latched = true; _start_rout(world, u); return
+	var now: float = world.time_s
+	u.pressure_checked_at = now
 	if u.job == "rout": return
-	if float(u.suppression) >= 60.0 and not u.forced_prone:
-		u.forced_prone = true; u.forced_until = world.time_s + 1.5
-		_change_posture(u, 2); u.stability = 0.0; u.status = "受压制伏低"
-		world.emit_event("unit_state_changed", {"unit_id": u.id, "state": "suppressed"})
-	elif u.forced_prone and world.time_s >= float(u.forced_until) and float(u.suppression) < 40.0:
-		u.forced_prone = false
-		_change_posture(u, int(u.posture_mode) if int(u.posture_mode) >= 0 else 0)
+	var level := int(u.get("pressure_level", 0))
+	var required := 2 if float(u.suppression) >= 60.0 else (1 if float(u.suppression) >= 30.0 else 0)
+	if level < required:
+		_enter_pressure(world, u, required)
+		level = required
+	if level == 2 and int(u.posture) == 2 and float(u.posture_timer) <= 0.0:
+		if float(u.pressure_ready_since) < 0.0: u.pressure_ready_since = now
+		var ready: float = float(u.pressure_ready_since) + 0.75
+		if float(u.suppression) >= 85.0 and now + 0.000001 >= ready and float(u.pressure_event_time) + 0.000001 >= ready:
+			_enter_pressure(world, u, 3); level = 3
+	elif level == 3 and float(u.posture_timer) <= 0.0:
+		if float(u.pressure_ready_since) < 0.0: u.pressure_ready_since = now
+		var ready: float = float(u.pressure_ready_since) + 0.75
+		if float(u.suppression) >= 100.0 and now + 0.000001 >= ready and float(u.pressure_event_time) + 0.000001 >= ready:
+			_start_rout(world, u); return
+	if level in [1, 2, 3]:
+		var threshold: float = [0.0, 25.0, 50.0, 70.0][level]
+		if float(u.suppression) < threshold:
+			if float(u.pressure_release_since) < 0.0: u.pressure_release_since = now
+			u.pressure_release_timer = now - float(u.pressure_release_since)
+			if float(u.pressure_release_timer) + 0.000001 >= 1.5:
+				var next_level := 2 if float(u.suppression) >= 50.0 else (1 if float(u.suppression) >= 25.0 else 0)
+				_enter_pressure(world, u, next_level)
+				_auto_posture(world, u)
+		else: u.pressure_release_timer = 0.0; u.pressure_release_since = -1.0
+
+func _interrupt_action(world, u: Dictionary) -> void:
+	u.stability = 0.0; u.burst_left = 0
+	u["aim_progress"] = 0.0; u["aim_elapsed"] = 0.0; u["aim_fraction"] = 0.0
+	world.combat_system._interrupt_reload(u, float(C.rifle().reload))
+	if u.stage in ["pickup_patient", "drop_patient", "treatment"]: u.job_timer = 0.0
+	if int(u.station_id) >= 0:
+		var b: Dictionary = world.entity(int(u.station_id))
+		if not b.is_empty():
+			b.aim_progress = 0.0; b["aim_elapsed"] = 0.0; b["aim_fraction"] = 0.0; b.burst_left = 0
+			world.combat_system._interrupt_reload(b, 10.0 if b.kind == "mortar" else float(C.machine_gun().reload))
+
+func _enter_pressure(world, u: Dictionary, level: int) -> void:
+	var old_level: int = int(u.get("pressure_level", 0))
+	var was_cower: bool = bool(u.get("cower", false))
+	u.pressure_level = level; u.cower = level == 3; u.forced_prone = level in [2, 3]
+	u.pressure_entered = world.time_s; u.pressure_release_timer = 0.0; u.pressure_ready_since = -1.0; u.pressure_release_since = -1.0; u.auto_posture_next = 0.0
+	var wanted := maxi(int(u.posture), mini(2, level)) if level > old_level else maxi(mini(2, level), int(u.posture_mode) if int(u.posture_mode) >= 0 else int(u.posture))
+	var changed := wanted != int(u.posture) or was_cower != bool(u.cower)
+	if wanted != int(u.posture): _change_posture(u, wanted)
+	elif was_cower != bool(u.cower): u.posture_timer = 0.35
+	if changed: _interrupt_action(world, u)
+	u.status = {0: "压制解除", 1: "受压蹲伏", 2: "受压卧倒", 3: "蜷缩避弹"}.get(level, "")
+	world.emit_event("unit_state_changed", {"unit_id": int(u.id), "state": "pressure_released" if level == 0 else "cowering" if level == 3 else "suppressed", "pressure_level": level, "posture": int(u.posture), "pos": Vector2(u.pos), "interrupted": changed})
 
 func _start_rout(world, u: Dictionary) -> void:
-	_cancel_job(world, u)
+	_cancel_job(world, u, false)
 	u.drafted = false; u.rout_until = world.time_s + 10.0; u.forced_prone = false; u.forced_until = 0.0
+	u.pressure_level = 4; u.cower = false; u.pressure_release_timer = 0.0; u.pressure_ready_since = -1.0
+	u.pressure_entered = world.time_s
 	u.job = "rout"; u.status = "溃逃"; _change_posture(u, 0)
 	var destination := _escape_goal(world, u)
-	if destination.x >= 0: _start_path(world, u, destination)
-	world.emit_event("unit_state_changed", {"unit_id": u.id, "state": "routed", "until": u.rout_until})
+	if destination.x >= 0 and _can_stand(world, destination) and _reachable(u.pos, destination): _start_path(world, u, destination)
+	world.emit_event("unit_state_changed", {"unit_id": u.id, "state": "routed", "until": u.rout_until, "pressure_level": 4, "pos": Vector2(u.pos)})
 
 func _escape_goal(world, u: Dictionary) -> Vector2:
-	var choices: Array[Vector2] = []
-	if u.team == 0:
-		for point in world.medical_slots: choices.append(point)
-	else:
-		var home := Vector2(clampf(u.spawn_entry.x, 0.5, 63.5), clampf(u.spawn_entry.y, 0.5, 47.5))
-		if _destination_free(world, home, [int(u.id)]) and _reachable(u.pos, home): return home
-		choices.append(Vector2(12.5, 0.5)); choices.append(Vector2(47.5, 0.5)); choices.append(Vector2(0.5, 21.5))
-	var best := Vector2(-1, -1); var distance := INF
-	for point in choices:
-		var d: float = u.pos.distance_squared_to(point)
-		if _destination_free(world, point, [int(u.id)]) and d < distance and _reachable(u.pos, point): best = point; distance = d
-	if best.x >= 0: return best
 	var threat := _nearest_opponent(world, u)
-	var away: Vector2 = (u.pos - threat.pos).normalized() if not threat.is_empty() else Vector2.UP
-	for radius in [8.0, 5.0, 2.0]:
-		for i in range(16):
-			var candidate: Vector2 = u.pos + away.rotated((i / 2 + 1) * (1.0 if i % 2 == 0 else -1.0) * 0.2) * radius
-			candidate = _center(candidate)
-			if _destination_free(world, candidate, [int(u.id)]) and _reachable(u.pos, candidate): return candidate
-	var fallback := _nearest_free_center(world, u, u.pos)
-	return fallback if fallback != Vector2.INF else _center(u.pos)
+	var incoming: Vector2 = Vector2(u.get("threat_origin", threat.get("pos", Vector2(u.pos) + Vector2.UP * 20.0)))
+	var choices: Array[Vector2] = []
+	var base := _cell(u.pos)
+	for y in range(maxi(0, base.y - 12), mini(C.MAP_SIZE.y, base.y + 13)):
+		for x in range(maxi(0, base.x - 12), mini(C.MAP_SIZE.x, base.x + 13)):
+			var point := Vector2(x + 0.5, y + 0.5)
+			if point.distance_squared_to(u.pos) <= 144.0: choices.append(point)
+	for point in world.medical_slots:
+		if not choices.has(point): choices.append(point)
+	choices.sort_custom(func(a, b): return a.y < b.y if a.y != b.y else a.x < b.x)
+	var best := Vector2.INF; var best_risk := INF; var best_length := INF
+	for point in choices:
+		if not _destination_free(world, point, [int(u.id)]): continue
+		var path := navigation.get_point_path(_cell(u.pos), _cell(point))
+		if path.is_empty(): continue
+		var length := 0.0; var previous: Vector2 = u.pos
+		for waypoint in path: length += previous.distance_to(waypoint); previous = waypoint
+		var copy := u.duplicate(); copy.posture = 0; copy.pos = point
+		var cover: Dictionary = world.cover_for(copy, incoming)
+		var exposure := 0.0
+		for fraction in [0.25, 0.5, 0.75]:
+			var index := mini(path.size() - 1, floori(float(path.size()) * fraction))
+			copy.pos = path[index]
+			exposure += 1.0 - float(world.cover_for(copy, incoming).get("chance", 0.0))
+		var safe_bonus := 0.2 if C.MEDICAL_RECT.has_point(point) else 0.0
+		var risk := (1.0 - float(cover.get("chance", 0.0))) * 2.0 + exposure / 3.0 - safe_bonus
+		if risk < best_risk - 0.000001 or (absf(risk - best_risk) <= 0.000001 and length < best_length - 0.000001):
+			best = point; best_risk = risk; best_length = length
+	return best if best != Vector2.INF else _center(u.pos)
 
 func _standby_ai(world, u: Dictionary) -> void:
 	if world.time_s < float(u.rout_until): return
@@ -915,11 +1093,48 @@ func _clear_segment(world, u: Dictionary, target: Vector2) -> bool:
 		if other.pos.distance_to(Geometry2D.get_closest_point_to_segment(other.pos, u.pos, target)) < 0.42: return false
 	return true
 
+# This query does not create reservations or mutate a unit. An override asks
+# about a hypothetical settled pose, while retaining pressure restrictions.
+func can_act(world, u: Dictionary, action: String, posture_override: int = -1) -> Dictionary:
+	if u.is_empty() or not u.has("conscious") or bool(u.get("dead", false)) or not bool(u.get("conscious", false)) or float(u.get("hp", 0.0)) <= 0.0: return _bad("人员失去行动能力")
+	if int(u.get("carrier_id", -1)) >= 0: return _bad("人员正在被搬运")
+	if not action in ["fire", "reload", "operate", "move", "treat", "rescue"]: return _bad("未知动作")
+	if bool(u.get("cower", false)): return _bad("蜷缩中，行动暂停")
+	if int(u.get("pressure_level", 0)) == 4 or String(u.get("job", "")) == "rout":
+		if action != "move": return _bad("溃逃中，无法执行该动作")
+	elif world.time_s < float(u.get("rout_until", 0.0)) and action != "move": return _bad("溃逃冷却中")
+	var posture := int(u.get("posture", 0)) if posture_override < 0 else posture_override
+	if posture < 0 or posture > 2: return _bad("姿态无效")
+	if int(u.get("pressure_level", 0)) in [1, 2] and posture < int(u.pressure_level): return _bad("受压制限制姿态")
+	if posture_override < 0 and float(u.get("posture_timer", 0.0)) > 0.0: return _bad("姿态切换中")
+	if action == "operate" and posture > 1: return _bad("卧倒无法操作工事，保留岗位")
+	if action in ["fire", "reload"] and int(u.get("station_id", -1)) >= 0 and posture > 1: return _bad("卧倒无法操作工事，保留岗位")
+	return {"ok": true, "reason": ""}
+
 func _auto_posture(world, u: Dictionary) -> void:
-	if int(u.posture_mode) >= 0 or u.forced_prone or float(u.posture_timer) > 0 or u.job == "rout": return
-	# Cover categories no longer depend on posture. Auto returns to its standing
-	# baseline after forced states; manual posture and suppression take priority.
-	if int(u.posture) != 0: _change_posture(u, 0)
+	if bool(u.get("cower", false)) or float(u.posture_timer) > 0.0 or u.job == "rout": return
+	var minimum := mini(2, int(u.get("pressure_level", 0)))
+	if int(u.posture_mode) >= 0:
+		_change_posture(u, maxi(int(u.posture_mode), minimum)); return
+	# Movement keeps priority; automatic defensive choices never change position.
+	if not u.path.is_empty() or bool(u.move_active) or u.job in ["move", "resupply", "rescue", "treat", "flee"]:
+		_change_posture(u, minimum); return
+	if world.time_s < float(u.get("auto_posture_next", 0.0)): return
+	u.auto_posture_next = world.time_s + 0.1
+	var station: Dictionary = world.entity(int(u.get("station_id", -1)))
+	if not station.is_empty() and String(u.stage) != "station": _change_posture(u, minimum); return
+	# Use the firing system's own selector for each hypothetical settled pose.
+	# The selector may discard dead intentions; copies prevent a pose query
+	# from mutating either the soldier or a station's actual target.
+	var weapon: Dictionary = C.rifle() if station.is_empty() else C.machine_gun()
+	for posture in [2, 1, 0]:
+		if posture < minimum or not can_act(world, u, "fire", posture).ok: continue
+		var copy := u.duplicate(true); copy.posture = posture; copy.posture_timer = 0.0
+		var station_copy := station.duplicate(true)
+		var target: Dictionary = world.combat_system._choose_target(world, copy, weapon, station_copy)
+		if not target.is_empty(): _change_posture(u, posture); return
+	# A quiet station still chooses its lowest compatible working posture.
+	_change_posture(u, maxi(minimum, 1) if not station.is_empty() else minimum)
 
 func _work(world, u: Dictionary, dt: float) -> void:
 	if u.team == 1: _melee_work(world, u, dt)
@@ -1051,7 +1266,7 @@ func _placement_add(cell: Vector2i, owner: int) -> void:
 	_placement_blockers[cell][owner] = true
 
 func _enemy_ai_live(world, u: Dictionary) -> void:
-	if u.forced_prone or world.time_s < float(u.rout_until): return
+	if bool(u.cower) or world.time_s < float(u.rout_until): return
 	if int(u.loaded) <= 0 and int(u.reserve) <= 0:
 		u.target_id = -1; u.ai_target_id = -1
 		_advance_to_structure(world, u, true); return
@@ -1215,3 +1430,4 @@ func _blocking_structure(world, u: Dictionary, goal: Vector2) -> Dictionary:
 		# Its near face must not be rejected as the attacker's own cover.
 		if not b.is_empty() and _barrier_type(b) == "wall" and not b.destroyed: return b
 	return {}
+

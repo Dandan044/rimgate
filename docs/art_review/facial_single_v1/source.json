@@ -1,0 +1,11 @@
+{
+  "source": "assets/art/vector/friendly_atlas.svg",
+  "sha256": "94bc97e1ddaaa4b67496f4d5835ddf331e9e92a458dedf03f53098fd3ac83abf",
+  "states": [
+    "平静 · 自然眨眼",
+    "专注 · 眉眼收紧",
+    "受伤 · 闭眼忍痛"
+  ],
+  "approval": "pending",
+  "runtime_modified": false
+}

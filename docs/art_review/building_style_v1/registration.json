@@ -1,0 +1,191 @@
+{
+  "a": {
+    "source": "source/a-buildings.png",
+    "size": [
+      1536,
+      1024
+    ],
+    "pieces": [
+      {
+        "name": "sandbag_stack",
+        "rect": [
+          148,
+          138,
+          320,
+          298
+        ]
+      },
+      {
+        "name": "wall_block",
+        "rect": [
+          668,
+          138,
+          231,
+          329
+        ]
+      },
+      {
+        "name": "turret",
+        "rect": [
+          1067,
+          17,
+          307,
+          465
+        ]
+      },
+      {
+        "name": "core",
+        "rect": [
+          76,
+          498,
+          457,
+          478
+        ]
+      },
+      {
+        "name": "single_bag",
+        "rect": [
+          600,
+          668,
+          383,
+          177
+        ]
+      },
+      {
+        "name": "wall_material",
+        "rect": [
+          1119,
+          611,
+          274,
+          276
+        ]
+      }
+    ]
+  },
+  "b": {
+    "source": "source/b-buildings.png",
+    "size": [
+      1536,
+      1024
+    ],
+    "pieces": [
+      {
+        "name": "sandbag_stack",
+        "rect": [
+          108,
+          108,
+          361,
+          343
+        ]
+      },
+      {
+        "name": "wall_block",
+        "rect": [
+          639,
+          100,
+          302,
+          361
+        ]
+      },
+      {
+        "name": "turret",
+        "rect": [
+          1100,
+          14,
+          322,
+          458
+        ]
+      },
+      {
+        "name": "core",
+        "rect": [
+          52,
+          524,
+          475,
+          447
+        ]
+      },
+      {
+        "name": "single_bag",
+        "rect": [
+          591,
+          665,
+          414,
+          158
+        ]
+      },
+      {
+        "name": "wall_material",
+        "rect": [
+          1147,
+          606,
+          276,
+          277
+        ]
+      }
+    ]
+  },
+  "c": {
+    "source": "source/c-buildings.png",
+    "size": [
+      1536,
+      1024
+    ],
+    "pieces": [
+      {
+        "name": "sandbag_stack",
+        "rect": [
+          113,
+          140,
+          358,
+          291
+        ]
+      },
+      {
+        "name": "wall_block",
+        "rect": [
+          666,
+          131,
+          262,
+          304
+        ]
+      },
+      {
+        "name": "turret",
+        "rect": [
+          1120,
+          7,
+          353,
+          477
+        ]
+      },
+      {
+        "name": "core",
+        "rect": [
+          57,
+          508,
+          487,
+          483
+        ]
+      },
+      {
+        "name": "single_bag",
+        "rect": [
+          610,
+          666,
+          408,
+          176
+        ]
+      },
+      {
+        "name": "wall_material",
+        "rect": [
+          1144,
+          621,
+          274,
+          271
+        ]
+      }
+    ]
+  }
+}

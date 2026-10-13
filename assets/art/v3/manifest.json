@@ -1,0 +1,74 @@
+{
+  "version": 3,
+  "approved_sources": {
+    "ground": "docs/art_review/terrain_style_v1/source/a-materials.png",
+    "sandbags": "docs/art_review/building_style_v1/source/sandbags-lumpy-v3.png",
+    "sandbag_layout": "approved v4, native independent sacks",
+    "buildings": "style 1 field military",
+    "hair": "assets/art/pawns_ai/heads.png"
+  },
+  "independent_components": {
+    "face": 3,
+    "features": 6,
+    "hair_front_back": 6,
+    "body_rigs": 3,
+    "expressions": [
+      "natural",
+      "blink",
+      "aim",
+      "hurt",
+      "panic",
+      "closed"
+    ],
+    "directions": [
+      "south",
+      "east",
+      "north",
+      "west"
+    ]
+  },
+  "enemy_fixed_outfits": [
+    "trooper",
+    "flanker",
+    "heavy"
+  ],
+  "connections": {
+    "directions": [
+      "north",
+      "east",
+      "south",
+      "west"
+    ],
+    "masks": 16,
+    "variants": 3,
+    "atlas_cell": 128,
+    "lighting": "fixed upper-left rim and lower-right contact shadows, not rotated whole tiles"
+  },
+  "source_preservation": "AI originals and prompts retained in original source paths; SVG overlays are code-native; no garment outfit combinations baked",
+  "reproduce": [
+    "tools/create_v3_vector_layers.py",
+    "tools/bake_v3_art.gd"
+  ],
+  "runtime_enemy_representation": "Fixed complete PNG atlases baked from approved friendly AI body/clothes/armor/helmet plus original code-native face mask; weapon remains independent; no expression processing for enemies",
+  "runtime_buildings": {
+    "machine_gun": "Approved style-1 original material extracted into independent fixed base and rotated gun PNGs",
+    "walls": "AI concrete top plus 32/128 south face, 7/128 east face, exterior bevel, fixed light and three distinct restrained crack patterns",
+    "core": "Approved AI subject plus independent glow and damage overlay",
+    "other_props": "Code-native matching olive military mortar, rifle, ammo boxes and medical beds"
+  },
+  "offline_only_inputs": [
+    "mg_source.png",
+    "ground_grass.png",
+    "ground_dirt.png",
+    "ground_gravel.png",
+    "ground_concrete.png",
+    "ground_metal.png",
+    "enemy_trooper.svg",
+    "enemy_flanker.svg",
+    "enemy_heavy.svg",
+    "enemy_mask.svg",
+    "mg_base.svg",
+    "mg_gun.svg"
+  ],
+  "runtime_ground": "ground_map.png retained as 16 static chunks; input five-material originals and decoration RNG are independent of battle state"
+}
